@@ -18,6 +18,7 @@ export type CreateBookingInput = {
   name?: unknown
   email?: unknown
   note?: unknown
+  rush?: unknown
 }
 
 export type CreateBookingResult = {
@@ -27,6 +28,7 @@ export type CreateBookingResult = {
   date?: string
   hour?: number
   duplicate?: boolean
+  rush?: boolean
 }
 
 type TxResult = { status?: "confirmed" | "pending"; duplicate?: boolean; error?: string }
@@ -36,10 +38,17 @@ type TxResult = { status?: "confirmed" | "pending"; duplicate?: boolean; error?:
  * capability. Every date, hour, slot and capacity rule is recomputed on the
  * server from the database before anything is written, so a crafted client
  * cannot book a slot that was never offered to that link.
+ *
+ * A "rush" request is the exception that is deliberately allowed anywhere in
+ * the rolling window: any date/hour, even busy or fully-booked ones. It is
+ * always stored as pending and never creates a task until the operator
+ * confirms it, so it can never silently collide with real work.
  */
 export async function createBooking(input: CreateBookingInput): Promise<CreateBookingResult> {
   const token = typeof input.token === "string" ? input.token : ""
   if (!token || token.length > 200) return { ok: false, error: "This link is invalid." }
+
+  const rush = input.rush === true
 
   const date = typeof input.date === "string" ? input.date : ""
   if (!isDate(date)) return { ok: false, error: "Invalid date." }
@@ -72,14 +81,23 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
     .get()
   if (!client) return { ok: false, error: "This link is no longer valid." }
 
-  const { views } = await loadSharedCalendar(link, 14)
+  const { views, days } = await loadSharedCalendar(link, 14)
   const view = views.find((v) => v.date === date)
-  if (!view || view.openHour !== hour) {
-    return { ok: false, error: "That time is no longer available. Please pick another slot." }
-  }
-  if (view.full) return { ok: false, error: "That day is fully booked. Please pick another day." }
 
-  const status = link.bookingMode === "request" ? "pending" : "confirmed"
+  if (rush) {
+    // Rush requests may target any hour on any date in the window, including
+    // busy and fully-booked hours. They are always pending, never instant.
+    if (!days.includes(date)) {
+      return { ok: false, error: "Please choose a date within the next two weeks." }
+    }
+  } else {
+    if (!view || view.openHour !== hour) {
+      return { ok: false, error: "That time is no longer available. Please pick another slot." }
+    }
+    if (view.full) return { ok: false, error: "That day is fully booked. Please pick another day." }
+  }
+
+  const status: "confirmed" | "pending" = rush || link.bookingMode === "request" ? "pending" : "confirmed"
 
   try {
     const result: TxResult = await db.transaction(async (tx) => {
@@ -95,17 +113,30 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
         return { status: existing.status as "confirmed" | "pending", duplicate: true }
       }
 
-      const dayBookings = await tx
-        .select({ id: bookings.id })
-        .from(bookings)
-        .where(and(eq(bookings.date, date), ne(bookings.status, "cancelled")))
-      if (dayBookings.length >= link.capacityPerDay) {
-        return { error: "That day is fully booked. Please pick another day." }
+      if (!rush) {
+        const dayBookings = await tx
+          .select({ id: bookings.id })
+          .from(bookings)
+          .where(and(eq(bookings.date, date), ne(bookings.status, "cancelled")))
+        if (dayBookings.length >= link.capacityPerDay) {
+          return { error: "That day is fully booked. Please pick another day." }
+        }
       }
 
       const [created] = await tx
         .insert(bookings)
-        .values({ tokenId: link.id, clientId: link.clientId, date, hour, name, email, note, status, createdAt: now })
+        .values({
+          tokenId: link.id,
+          clientId: link.clientId,
+          date,
+          hour,
+          name,
+          email,
+          note,
+          status,
+          rush,
+          createdAt: now,
+        })
         .returning({ id: bookings.id, status: bookings.status })
 
       if (status === "confirmed") {
@@ -135,7 +166,7 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
     revalidatePath("/shared-views")
     revalidatePath("/timeline")
     revalidatePath("/")
-    return { ok: true, status: result.status, date, hour, duplicate: result.duplicate }
+    return { ok: true, status: result.status, date, hour, duplicate: result.duplicate, rush }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Could not save the booking. Please try again." }
   }
@@ -176,7 +207,7 @@ export async function setBookingStatus(id: number, status: "pending" | "confirme
     const [task] = await db
       .insert(tasks)
       .values({
-        title: `Client booking — ${clientName}`,
+        title: `${booking.rush ? "Rush booking" : "Client booking"} — ${clientName}`,
         description: booking.note,
         clientId: link?.clientId ?? booking.clientId ?? null,
         estimatedMinutes: 60,

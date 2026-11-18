@@ -55,6 +55,7 @@ export type BookingRow = {
   email: string
   note: string | null
   status: string
+  rush: boolean
   tokenId: number
   clientName: string | null
 }
@@ -614,6 +615,11 @@ export function SharedViewsManager({
                     <span className="text-sm font-medium text-foreground">
                       {prettyDay(b.date)} · {hourLabel(b.hour)}
                     </span>
+                    {b.rush && (
+                      <span className="mono rounded-full border border-gold/40 bg-gold/10 px-1.5 py-0.5 text-[9px] uppercase text-gold">
+                        Rush
+                      </span>
+                    )}
                     {statusBadge(b.status)}
                   </div>
                   <p className="mono mt-1 text-[10px] text-muted">

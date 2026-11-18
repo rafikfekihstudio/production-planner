@@ -25,16 +25,22 @@ export function weekKey(date: string) {
 
 export type DayView = {
   date: string
+  /** Real commitments (marked-busy blocks and scheduled work). */
   busyHours: number[]
+  /** Hours another booking has already taken. */
+  bookedHours: number[]
+  /** The one curated hour this link may book normally, if any. */
   openHour: number | null
+  /** Whether this date has reached its booking capacity. */
   full: boolean
 }
 
 /**
  * Builds the calendar one client sees. Busy hours come from real marked-busy
- * blocks, real scheduled work and existing bookings — never invented. Open
- * hours are a small, stable subset of your genuine openings, at most one per
- * day and capped per week, so each client sees a different but consistent
+ * blocks and real scheduled work — never invented. Booked hours are tracked
+ * separately so the table can distinguish "Busy" from "Taken". Open hours are
+ * a small, stable subset of your genuine openings, at most one per day and
+ * capped per week, so each client sees a different but consistent
  * "busy yet reachable" picture.
  */
 export function buildDayViews({
@@ -55,7 +61,13 @@ export function buildDayViews({
   capacityPerDay: number
 }): DayView[] {
   const bookedCount = new Map<string, number>()
-  for (const b of booked) bookedCount.set(b.date, (bookedCount.get(b.date) ?? 0) + 1)
+  const bookedByDate = new Map<string, Set<number>>()
+  for (const b of booked) {
+    bookedCount.set(b.date, (bookedCount.get(b.date) ?? 0) + 1)
+    const set = bookedByDate.get(b.date) ?? new Set<number>()
+    set.add(b.hour)
+    bookedByDate.set(b.date, set)
+  }
 
   const busyByDate = new Map<string, Set<number>>()
   for (const range of busyRanges) {
@@ -63,18 +75,14 @@ export function buildDayViews({
     for (let h = Math.max(HOUR_START, range.startHour); h < Math.min(HOUR_END, range.endHour); h++) set.add(h)
     busyByDate.set(range.date, set)
   }
-  for (const b of booked) {
-    const set = busyByDate.get(b.date) ?? new Set<number>()
-    set.add(b.hour)
-    busyByDate.set(b.date, set)
-  }
 
   const candidatesByDate = new Map<string, number[]>()
   for (const range of openRanges) {
     const busy = busyByDate.get(range.date) ?? new Set<number>()
+    const taken = bookedByDate.get(range.date) ?? new Set<number>()
     const list = candidatesByDate.get(range.date) ?? []
     for (let h = Math.max(HOUR_START, range.startHour); h < Math.min(HOUR_END, range.endHour); h++) {
-      if (!busy.has(h) && !list.includes(h)) list.push(h)
+      if (!busy.has(h) && !taken.has(h) && !list.includes(h)) list.push(h)
     }
     candidatesByDate.set(range.date, list)
   }
@@ -82,6 +90,7 @@ export function buildDayViews({
   const views: DayView[] = days.map((date) => ({
     date,
     busyHours: Array.from(busyByDate.get(date) ?? []).sort((a, b) => a - b),
+    bookedHours: Array.from(bookedByDate.get(date) ?? []).sort((a, b) => a - b),
     openHour: null,
     full: (bookedCount.get(date) ?? 0) >= capacityPerDay,
   }))

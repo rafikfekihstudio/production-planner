@@ -7,8 +7,37 @@ import { createBooking } from "@/lib/actions/booking"
 import { HOURS, hourLabel, type DayView } from "@/lib/booking"
 import { prettyDate } from "@/lib/assistant/time"
 
-type Selected = { date: string; hour: number }
-type Done = { status: string; date: string; hour: number }
+type Selected = { date: string; hour: number; rush: boolean }
+type Done = { status: string; date: string; hour: number; rush: boolean }
+type CellState = "open" | "busy" | "taken" | "free"
+
+const CELL_STYLE: Record<CellState, string> = {
+  open: "bg-teal/90 text-background hover:bg-teal",
+  busy: "bg-gold/20 text-gold hover:bg-gold/35",
+  taken: "bg-danger/25 text-danger hover:bg-danger/40",
+  free: "bg-surface-2 text-muted ring-1 ring-border/60 hover:text-foreground",
+}
+
+const CELL_LABEL: Record<CellState, string> = {
+  open: "Open",
+  busy: "Busy",
+  taken: "Taken",
+  free: "Free",
+}
+
+const LEGEND_STYLE: Record<CellState, string> = {
+  open: "bg-teal/90",
+  busy: "bg-gold/30",
+  taken: "bg-danger/30",
+  free: "bg-surface-2 ring-1 ring-border",
+}
+
+function cellState(view: DayView, hour: number): CellState {
+  if (view.openHour === hour && !view.full) return "open"
+  if (view.bookedHours.includes(hour)) return "taken"
+  if (view.busyHours.includes(hour)) return "busy"
+  return "free"
+}
 
 export function BookingPanel({ token, views, mode }: { token: string; views: DayView[]; mode: string }) {
   const router = useRouter()
@@ -34,13 +63,14 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         name: form.name,
         email: form.email,
         note: form.note,
+        rush: selected.rush,
       })
       if (!result.ok || !result.status) {
         setError(result.error ?? "Could not book that slot. Please try again.")
         router.refresh()
         return
       }
-      setDone({ status: result.status, date: selected.date, hour: selected.hour })
+      setDone({ status: result.status, date: selected.date, hour: selected.hour, rush: selected.rush })
       setStep("done")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not book that slot. Please try again.")
@@ -50,22 +80,26 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
   }
 
   if (step === "done" && done) {
+    const heading = done.rush
+      ? "Rush request received"
+      : done.status === "pending"
+        ? "Request received"
+        : "Booking confirmed"
+    const message = done.rush
+      ? "I'll review this rush request and confirm it shortly — it isn't on the calendar yet."
+      : done.status === "pending"
+        ? "I'll review your request and confirm it shortly."
+        : "It's in the calendar. See you then."
     return (
       <section className="mt-10 rounded-lg border border-teal/40 bg-teal/10 p-6">
         <div className="flex items-center gap-2 text-teal">
           <Check className="h-4 w-4" />
-          <h2 className="mono text-[10px] uppercase tracking-widest">
-            {done.status === "pending" ? "Request received" : "Booking confirmed"}
-          </h2>
+          <h2 className="mono text-[10px] uppercase tracking-widest">{heading}</h2>
         </div>
         <p className="serif mt-3 text-2xl text-foreground">
           {prettyDate(done.date)} at {hourLabel(done.hour)}
         </p>
-        <p className="mt-2 text-sm text-muted">
-          {done.status === "pending"
-            ? "I'll review your request and confirm it shortly."
-            : "It's in the calendar. See you then."}
-        </p>
+        <p className="mt-2 text-sm text-muted">{message}</p>
         <button
           type="button"
           onClick={() => {
@@ -88,11 +122,19 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
       <section className="mt-10 rounded-lg border border-border bg-surface p-5">
         <div className="flex items-center gap-2">
           <Clock className="h-3.5 w-3.5 text-gold" />
-          <h2 className="mono text-[10px] uppercase tracking-widest text-muted">Confirm your slot</h2>
+          <h2 className="mono text-[10px] uppercase tracking-widest text-muted">
+            {selected.rush ? "Request a rush hour" : "Confirm your slot"}
+          </h2>
         </div>
         <p className="serif mt-2 text-2xl text-foreground">
           {prettyDate(selected.date)} · {hourLabel(selected.hour)}–{hourLabel(selected.hour + 1)}
         </p>
+        {selected.rush && (
+          <p className="mt-3 rounded-md border border-gold/40 bg-gold/10 px-3 py-2 text-xs text-gold">
+            This hour isn&apos;t open for instant booking. It will be sent as a rush request and only added to the
+            calendar if I confirm it.
+          </p>
+        )}
         <form onSubmit={submit} className="mt-5 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block">
@@ -142,7 +184,13 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
               disabled={busy}
               className="rounded-md bg-gold px-4 py-2 text-xs font-medium text-background hover:bg-gold-soft disabled:opacity-50"
             >
-              {busy ? "Booking…" : mode === "request" ? "Send request" : "Confirm booking"}
+              {busy
+                ? "Sending…"
+                : selected.rush
+                  ? "Send rush request"
+                  : mode === "request"
+                    ? "Send request"
+                    : "Confirm booking"}
             </button>
             <button
               type="button"
@@ -165,67 +213,88 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="mono text-[10px] uppercase tracking-widest text-muted">Pick an hour</h2>
         <span className="mono text-[10px] uppercase tracking-widest text-teal">
-          {openCount} open {openCount === 1 ? "slot" : "slots"}
+          {openCount} open {openCount === 1 ? "slot" : "slots"} · rush available any hour
         </span>
       </div>
-      <p className="mt-2 text-[11px] text-muted">
-        Filled blocks are already taken. Only the open hour on each day can be booked through this link.
+      <p className="mt-2 text-[11px] leading-relaxed text-muted">
+        <span className="text-teal">Open</span> hours can be booked now. Every other hour —{" "}
+        <span className="text-gold">Busy</span>, <span className="text-danger">Taken</span> or{" "}
+        <span className="text-foreground">Free</span> — can be requested as a rush. I&apos;ll review rush requests
+        before they go on the calendar.
       </p>
 
-      <div className="mt-4 space-y-2">
-        {views.map((view) => {
-          const open = view.openHour !== null && !view.full
-          return (
-            <div key={view.date} className="rounded-lg border border-border bg-surface px-3 py-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm text-foreground">{prettyDate(view.date)}</span>
-                <span
-                  className={`mono text-[10px] uppercase tracking-widest ${
-                    open ? "text-teal" : view.full ? "text-danger" : "text-muted"
-                  }`}
+      <div className="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
+        <table className="w-full min-w-[860px] border-collapse">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="mono sticky left-0 z-10 bg-surface px-3 py-2 text-left text-[9px] font-medium uppercase tracking-wider text-muted">
+                Day
+              </th>
+              {HOURS.map((h) => (
+                <th
+                  key={h}
+                  className="mono px-1 py-2 text-center text-[9px] font-medium text-muted"
+                  title={`${hourLabel(h)}–${hourLabel(h + 1)}`}
                 >
-                  {open ? `${hourLabel(view.openHour!)} open` : view.full ? "Fully booked" : "—"}
-                </span>
-              </div>
-              <div className="mt-2 flex gap-[2px]" aria-label={`Hourly view for ${prettyDate(view.date)}`}>
+                  {String(h).padStart(2, "0")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {views.map((view) => (
+              <tr key={view.date} className="border-b border-border/60 last:border-0">
+                <th className="mono sticky left-0 z-10 whitespace-nowrap bg-surface px-3 py-2 text-left text-[10px] font-normal text-foreground">
+                  {prettyDate(view.date)}
+                </th>
                 {HOURS.map((h) => {
-                  const isBusy = view.busyHours.includes(h)
-                  const isOpen = open && view.openHour === h
-                  if (isOpen) {
-                    return (
+                  const state = cellState(view, h)
+                  const label = CELL_LABEL[state]
+                  const isOpen = state === "open"
+                  return (
+                    <td key={h} className="px-1 py-1.5 text-center">
                       <button
-                        key={h}
                         type="button"
                         onClick={() => {
-                          setSelected({ date: view.date, hour: h })
+                          setSelected({ date: view.date, hour: h, rush: !isOpen })
                           setStep("form")
                           setError(null)
                         }}
-                        title={`Book ${hourLabel(h)}`}
-                        aria-label={`Book ${prettyDate(view.date)} at ${hourLabel(h)}`}
-                        className="h-5 min-w-0 flex-1 rounded-sm bg-teal/80 ring-1 ring-teal hover:bg-teal"
-                      />
-                    )
-                  }
-                  return (
-                    <span
-                      key={h}
-                      title={isBusy ? `${hourLabel(h)} — busy` : hourLabel(h)}
-                      aria-label={isBusy ? `${hourLabel(h)} busy` : undefined}
-                      className={`h-5 min-w-0 flex-1 rounded-sm ${
-                        isBusy ? "bg-danger/25" : "bg-surface-2"
-                      }`}
-                    />
+                        title={`${prettyDate(view.date)} · ${hourLabel(h)}–${hourLabel(h + 1)} — ${
+                          isOpen ? "book now" : `${label} · request as rush`
+                        }`}
+                        aria-label={`${prettyDate(view.date)} at ${hourLabel(h)} — ${label}, ${
+                          isOpen ? "book now" : "request as rush"
+                        }`}
+                        className={`h-8 w-full rounded-sm text-[9px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${CELL_STYLE[state]}`}
+                      >
+                        {label}
+                      </button>
+                    </td>
                   )
                 })}
-              </div>
-            </div>
-          )
-        })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
+
+      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
+        {(Object.keys(CELL_LABEL) as CellState[]).map((state) => (
+          <span key={state} className="flex items-center gap-1.5 text-[11px] text-muted">
+            <span className={`h-3 w-5 rounded-sm ${LEGEND_STYLE[state]}`} />
+            <span className="text-foreground">{CELL_LABEL[state]}</span>
+            {state === "open" ? "— book now" : state === "free" ? "— request anytime" : "— request as rush"}
+          </span>
+        ))}
+      </div>
+      <p className="mono mt-3 text-[9px] uppercase tracking-wider text-muted">
+        Times are 24-hour · 09 = 09:00–10:00
+      </p>
+
       {openCount === 0 && (
-        <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-8 text-center text-sm text-muted">
-          No open hours in the next two weeks. Please check back soon.
+        <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-6 text-center text-sm text-muted">
+          No hours are open for instant booking in the next two weeks — you can still request any hour as a rush.
         </p>
       )}
       {error && (

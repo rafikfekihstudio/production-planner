@@ -140,6 +140,7 @@ export const bookings = sqliteTable(
     email: text("email").notNull(),
     note: text("note"),
     status: text("status", { enum: ["pending", "confirmed", "cancelled"] }).notNull().default("confirmed"),
+    rush: integer("rush", { mode: "boolean" }).notNull().default(false),
     taskId: integer("task_id").references(() => tasks.id, { onDelete: "set null" }),
     createdAt: text("created_at").$defaultFn(nowISO),
   },
