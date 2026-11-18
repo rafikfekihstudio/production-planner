@@ -10,7 +10,15 @@ import { prettyDate } from "@/lib/assistant/time"
 type Selected = { date: string; hour: number; rush: boolean }
 type Result = Selected & { ok: boolean; status?: "confirmed" | "pending"; error?: string }
 type CellState = "open" | "busy" | "taken" | "free"
-type DragState = { startKey: string; moved: boolean; lastKey: string; startX: number; startY: number }
+type DragState = {
+  startKey: string
+  pointerId: number
+  moved: boolean
+  filled: boolean
+  lastKey: string
+  startX: number
+  startY: number
+}
 type SelectionGroup = { key: string; date: string; start: number; end: number; hours: number[]; rush: boolean }
 
 const CELL_STYLE: Record<CellState, string> = {
@@ -91,7 +99,7 @@ type SlotCellProps = {
   hour: number
   state: CellState
   picked: boolean
-  onDown: (date: string, hour: number, e: React.PointerEvent<HTMLButtonElement>) => void
+  onDown: (date: string, hour: number, e: React.PointerEvent<HTMLElement>) => void
   onKey: (date: string, hour: number) => void
 }
 
@@ -99,13 +107,16 @@ const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onK
   const label = CELL_LABEL[state]
   const isOpen = state === "open"
   return (
-    <td className="px-0.5 py-1.5 text-center">
+    // The whole cell is the hit target — including the outer edges of the 07:00
+    // and 22:00 columns, which sit next to the sticky day column and scrollbar.
+    <td className="p-0 text-center" onPointerDown={(e) => onDown(date, hour, e)}>
       <button
         type="button"
         data-slot={slotKey({ date, hour })}
         aria-pressed={picked}
-        onPointerDown={(e) => onDown(date, hour, e)}
         onClick={(e) => {
+          // Pointer clicks are resolved once on pointerup; only keyboard
+          // activation (detail 0) reaches here.
           if (e.detail === 0) onKey(date, hour)
         }}
         title={`${prettyDate(date)} · ${hourLabel(hour)}–${hourLabel(hour + 1)} — ${
@@ -114,7 +125,7 @@ const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onK
         aria-label={`${prettyDate(date)} at ${hourLabel(hour)} — ${label}, ${
           isOpen ? "book now" : "request as rush"
         }${picked ? ", selected" : ""}`}
-        className={`h-9 w-full cursor-crosshair touch-none select-none rounded-sm text-[9px] font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${
+        className={`block h-11 w-full cursor-crosshair touch-none select-none rounded-sm text-[9px] font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${
           CELL_STYLE[state]
         } ${picked ? "relative z-10 outline outline-2 outline-offset-1 outline-foreground" : ""}`}
       >
@@ -220,13 +231,15 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
   // click is resolved once on pointerup. A small movement threshold keeps a
   // single click from picking up a neighbouring hour.
   const onCellPointerDown = useCallback(
-    (date: string, hour: number, e: React.PointerEvent<HTMLButtonElement>) => {
+    (date: string, hour: number, e: React.PointerEvent<HTMLElement>) => {
       if (e.pointerType === "mouse" && e.button !== 0) return
       dragCleanupRef.current?.()
       const key = slotKey({ date, hour })
       dragRef.current = {
         startKey: key,
+        pointerId: e.pointerId,
         moved: false,
+        filled: false,
         lastKey: key,
         startX: e.clientX,
         startY: e.clientY,
@@ -234,7 +247,7 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
 
       const onMove = (ev: PointerEvent) => {
         const drag = dragRef.current
-        if (!drag) return
+        if (!drag || ev.pointerId !== drag.pointerId) return
         if (!drag.moved && Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < 4) return
         drag.moved = true
         const under = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null
@@ -242,6 +255,7 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         const cellKey = cell?.dataset.slot
         if (!cellKey || cellKey === drag.lastKey) return
         fillDrag(drag.lastKey, cellKey)
+        drag.filled = true
         drag.lastKey = cellKey
       }
 
@@ -249,25 +263,31 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         window.removeEventListener("pointermove", onMove)
         window.removeEventListener("pointerup", onUp)
         window.removeEventListener("pointercancel", onCancel)
-        window.removeEventListener("blur", onCancel)
+        window.removeEventListener("blur", onBlur)
         dragRef.current = null
         dragCleanupRef.current = null
       }
 
-      const onUp = () => {
+      const onUp = (ev: PointerEvent) => {
         const drag = dragRef.current
+        if (!drag || ev.pointerId !== drag.pointerId) return
         detach()
-        if (!drag || drag.moved) return
+        // A jitter into a cell edge/scrollbar may set `moved` without ever
+        // filling a range. Treat that as a click so edge slots never swallow it.
+        if (drag.moved && drag.filled) return
         const [d, h] = drag.startKey.split(":")
         toggleSlot(d, Number(h))
       }
 
-      const onCancel = () => detach()
+      const onCancel = (ev: PointerEvent) => {
+        if (ev.pointerId === dragRef.current?.pointerId) detach()
+      }
+      const onBlur = () => detach()
 
       window.addEventListener("pointermove", onMove)
       window.addEventListener("pointerup", onUp)
       window.addEventListener("pointercancel", onCancel)
-      window.addEventListener("blur", onCancel)
+      window.addEventListener("blur", onBlur)
       dragCleanupRef.current = detach
     },
     [fillDrag, toggleSlot],
@@ -508,52 +528,55 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         <span className="text-foreground">Free</span> — becomes a rush request. One form covers all your picks.
       </p>
 
-      {selected.length > 0 && (
-        <div className="mt-4 rounded-lg border border-teal/40 bg-surface p-2 shadow-lg">
-          <div className="flex items-center gap-2">
-            <span className="mono shrink-0 text-[10px] uppercase tracking-widest text-teal">
-              {selected.length}h<span className="hidden sm:inline"> · {openSelected} now · {rushSelected} rush</span>
-            </span>
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1 py-1">
-              {groups.map((g) => (
+      {/* Reserve the bar's space so the grid never jumps when the first hour is picked. */}
+      <div className="min-h-[66px] pt-4">
+        {selected.length > 0 && (
+          <div className="rounded-lg border border-teal/40 bg-surface p-2 shadow-lg">
+            <div className="flex items-center gap-2">
+              <span className="mono shrink-0 text-[10px] uppercase tracking-widest text-teal">
+                {selected.length}h<span className="hidden sm:inline"> · {openSelected} now · {rushSelected} rush</span>
+              </span>
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1 py-1">
+                {groups.map((g) => (
+                  <button
+                    key={g.key}
+                    type="button"
+                    onClick={() => removeSlots(g.hours.map((hour) => ({ date: g.date, hour })))}
+                    title={`Remove ${prettyDate(g.date)} ${hourLabel(g.start)}–${hourLabel(g.end + 1)}`}
+                    className="mono flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-surface-2 px-2 py-1 text-[9px] text-muted hover:border-danger/50 hover:text-danger"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${g.rush ? "bg-gold" : "bg-teal"}`} />
+                    {prettyDate(g.date)} {hourLabel(g.start)}
+                    {g.end !== g.start ? `–${hourLabel(g.end)}` : ""} · {g.hours.length}h ×
+                  </button>
+                ))}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
                 <button
-                  key={g.key}
                   type="button"
-                  onClick={() => removeSlots(g.hours.map((hour) => ({ date: g.date, hour })))}
-                  title={`Remove ${prettyDate(g.date)} ${hourLabel(g.start)}–${hourLabel(g.end + 1)}`}
-                  className="mono flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-surface-2 px-2 py-1 text-[9px] text-muted hover:border-danger/50 hover:text-danger"
+                  onClick={() => {
+                    commitSelection([])
+                    setError(null)
+                  }}
+                  className="rounded-md border border-border px-2 py-1.5 text-[10px] text-muted hover:text-foreground"
                 >
-                  <span className={`h-1.5 w-1.5 rounded-full ${g.rush ? "bg-gold" : "bg-teal"}`} />
-                  {prettyDate(g.date)} {hourLabel(g.start)}
-                  {g.end !== g.start ? `–${hourLabel(g.end)}` : ""} · {g.hours.length}h ×
+                  Clear
                 </button>
-              ))}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  commitSelection([])
-                  setError(null)
-                }}
-                className="rounded-md border border-border px-2 py-1.5 text-[10px] text-muted hover:text-foreground"
-              >
-                Clear
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setStep("form")
-                  setError(null)
-                }}
-                className="rounded-md bg-gold px-3 py-1.5 text-[10px] font-medium text-background hover:bg-gold-soft"
-              >
-                Continue →
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep("form")
+                    setError(null)
+                  }}
+                  className="rounded-md bg-gold px-3 py-1.5 text-[10px] font-medium text-background hover:bg-gold-soft"
+                >
+                  Continue →
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="mt-4 max-h-[min(60vh,520px)] overflow-auto rounded-lg border border-border bg-surface">
         <table className="w-full min-w-[640px] table-fixed border-collapse select-none">
