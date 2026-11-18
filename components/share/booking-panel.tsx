@@ -10,7 +10,7 @@ import { prettyDate } from "@/lib/assistant/time"
 type Selected = { date: string; hour: number; rush: boolean }
 type Result = Selected & { ok: boolean; status?: "confirmed" | "pending"; error?: string }
 type CellState = "open" | "busy" | "taken" | "free"
-type DragState = { startKey: string; wasSelected: boolean; moved: boolean; lastKey: string }
+type DragState = { startKey: string; moved: boolean; lastKey: string; startX: number; startY: number }
 type SelectionGroup = { key: string; date: string; start: number; end: number; hours: number[]; rush: boolean }
 
 const CELL_STYLE: Record<CellState, string> = {
@@ -92,21 +92,19 @@ type SlotCellProps = {
   state: CellState
   picked: boolean
   onDown: (date: string, hour: number, e: React.PointerEvent<HTMLButtonElement>) => void
-  onMove: (e: React.PointerEvent<HTMLButtonElement>) => void
   onKey: (date: string, hour: number) => void
 }
 
-const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onMove, onKey }: SlotCellProps) {
+const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onKey }: SlotCellProps) {
   const label = CELL_LABEL[state]
   const isOpen = state === "open"
   return (
-    <td className="px-1 py-1.5 text-center">
+    <td className="px-0.5 py-1.5 text-center">
       <button
         type="button"
         data-slot={slotKey({ date, hour })}
         aria-pressed={picked}
         onPointerDown={(e) => onDown(date, hour, e)}
-        onPointerMove={onMove}
         onClick={(e) => {
           if (e.detail === 0) onKey(date, hour)
         }}
@@ -116,7 +114,7 @@ const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onM
         aria-label={`${prettyDate(date)} at ${hourLabel(hour)} — ${label}, ${
           isOpen ? "book now" : "request as rush"
         }${picked ? ", selected" : ""}`}
-        className={`h-8 w-full cursor-crosshair touch-none select-none rounded-sm text-[9px] font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${
+        className={`h-9 w-full cursor-crosshair touch-none select-none rounded-sm text-[9px] font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${
           CELL_STYLE[state]
         } ${picked ? "relative z-10 outline outline-2 outline-offset-1 outline-foreground" : ""}`}
       >
@@ -214,51 +212,65 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
     [views, addSlots],
   )
 
-  useEffect(() => {
-    function endDrag() {
-      const drag = dragRef.current
-      if (!drag) return
-      if (!drag.moved && drag.wasSelected) {
-        const [date, hour] = drag.startKey.split(":")
-        removeSlot(date, Number(hour))
-      }
-      dragRef.current = null
-    }
-    window.addEventListener("pointerup", endDrag)
-    window.addEventListener("pointercancel", endDrag)
-    window.addEventListener("blur", endDrag)
-    return () => {
-      window.removeEventListener("pointerup", endDrag)
-      window.removeEventListener("pointercancel", endDrag)
-      window.removeEventListener("blur", endDrag)
-    }
-  }, [removeSlot])
+  const dragCleanupRef = useRef<(() => void) | null>(null)
 
+  useEffect(() => () => dragCleanupRef.current?.(), [])
+
+  // Drag tracking lives on window so crossing cells is reliable, and a plain
+  // click is resolved once on pointerup. A small movement threshold keeps a
+  // single click from picking up a neighbouring hour.
   const onCellPointerDown = useCallback(
     (date: string, hour: number, e: React.PointerEvent<HTMLButtonElement>) => {
       if (e.pointerType === "mouse" && e.button !== 0) return
+      dragCleanupRef.current?.()
       const key = slotKey({ date, hour })
-      const already = selectedRef.current.some((s) => s.date === date && s.hour === hour)
-      dragRef.current = { startKey: key, wasSelected: already, moved: false, lastKey: key }
-      if (!already) addSlots([{ date, hour }])
-      e.currentTarget.setPointerCapture(e.pointerId)
-    },
-    [addSlots],
-  )
+      dragRef.current = {
+        startKey: key,
+        moved: false,
+        lastKey: key,
+        startX: e.clientX,
+        startY: e.clientY,
+      }
 
-  const onCellPointerMove = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
-      const cell = under?.closest<HTMLElement>("[data-slot]")
-      const key = cell?.dataset.slot
-      if (!key || key === drag.lastKey) return
-      drag.moved = true
-      fillDrag(drag.lastKey, key)
-      drag.lastKey = key
+      const onMove = (ev: PointerEvent) => {
+        const drag = dragRef.current
+        if (!drag) return
+        if (!drag.moved && Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < 4) return
+        drag.moved = true
+        const under = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null
+        const cell = under?.closest<HTMLElement>("[data-slot]")
+        const cellKey = cell?.dataset.slot
+        if (!cellKey || cellKey === drag.lastKey) return
+        fillDrag(drag.lastKey, cellKey)
+        drag.lastKey = cellKey
+      }
+
+      const detach = () => {
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+        window.removeEventListener("pointercancel", onCancel)
+        window.removeEventListener("blur", onCancel)
+        dragRef.current = null
+        dragCleanupRef.current = null
+      }
+
+      const onUp = () => {
+        const drag = dragRef.current
+        detach()
+        if (!drag || drag.moved) return
+        const [d, h] = drag.startKey.split(":")
+        toggleSlot(d, Number(h))
+      }
+
+      const onCancel = () => detach()
+
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+      window.addEventListener("pointercancel", onCancel)
+      window.addEventListener("blur", onCancel)
+      dragCleanupRef.current = detach
     },
-    [fillDrag],
+    [fillDrag, toggleSlot],
   )
 
   async function submit(e: React.FormEvent) {
@@ -491,81 +503,13 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
         Drag across hours to select a range, then drag again to keep adding. A plain click selects or removes a single
-        hour; the bar below groups your picks. <span className="text-teal">Open</span> hours book now, every other hour
+        hour; the bar above groups your picks. <span className="text-teal">Open</span> hours book now, every other hour
         — <span className="text-gold">Busy</span>, <span className="text-danger">Taken</span> or{" "}
         <span className="text-foreground">Free</span> — becomes a rush request. One form covers all your picks.
       </p>
 
-      <div className="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-        <table className="w-full min-w-[860px] border-collapse select-none">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="mono sticky left-0 z-10 bg-surface px-3 py-2 text-left text-[9px] font-medium uppercase tracking-wider text-muted">
-                Day
-              </th>
-              {HOURS.map((h) => (
-                <th
-                  key={h}
-                  className="mono px-1 py-2 text-center text-[9px] font-medium text-muted"
-                  title={`${hourLabel(h)}–${hourLabel(h + 1)}`}
-                >
-                  {String(h).padStart(2, "0")}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {views.map((view) => (
-              <tr key={view.date} className="border-b border-border/60 last:border-0">
-                <th className="mono sticky left-0 z-10 whitespace-nowrap bg-surface px-3 py-2 text-left text-[10px] font-normal text-foreground">
-                  {prettyDate(view.date)}
-                </th>
-                {HOURS.map((h) => (
-                  <SlotCell
-                    key={h}
-                    date={view.date}
-                    hour={h}
-                    state={cellState(view, h)}
-                    picked={selectedKeys.has(`${view.date}:${h}`)}
-                    onDown={onCellPointerDown}
-                    onMove={onCellPointerMove}
-                    onKey={toggleSlot}
-                  />
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
-        {(Object.keys(CELL_LABEL) as CellState[]).map((state) => (
-          <span key={state} className="flex items-center gap-1.5 text-[11px] text-muted">
-            <span className={`h-3 w-5 rounded-sm ${LEGEND_STYLE[state]}`} />
-            <span className="text-foreground">{CELL_LABEL[state]}</span>
-            {state === "open" ? "— book now" : state === "free" ? "— request anytime" : "— request as rush"}
-          </span>
-        ))}
-        <span className="flex items-center gap-1.5 text-[11px] text-muted">
-          <span className="h-3 w-5 rounded-sm outline outline-2 outline-offset-1 outline-foreground" />
-          <span className="text-foreground">Outlined</span> — selected
-        </span>
-      </div>
-      <p className="mono mt-3 text-[9px] uppercase tracking-wider text-muted">
-        Times are 24-hour · 09 = 09:00–10:00 · drag to select a range of hours
-      </p>
-
-      {openCount === 0 && (
-        <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-6 text-center text-sm text-muted">
-          No hours are open for instant booking in the next two weeks — you can still select any hours as a rush.
-        </p>
-      )}
-      {error && (
-        <p className="mt-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
-      )}
-
       {selected.length > 0 && (
-        <div className="sticky bottom-3 z-20 mt-5 rounded-lg border border-teal/40 bg-surface p-2 shadow-lg">
+        <div className="mt-4 rounded-lg border border-teal/40 bg-surface p-2 shadow-lg">
           <div className="flex items-center gap-2">
             <span className="mono shrink-0 text-[10px] uppercase tracking-widest text-teal">
               {selected.length}h<span className="hidden sm:inline"> · {openSelected} now · {rushSelected} rush</span>
@@ -610,6 +554,74 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
           </div>
         </div>
       )}
+
+      <div className="mt-4 max-h-[min(60vh,520px)] overflow-auto rounded-lg border border-border bg-surface">
+        <table className="w-full min-w-[640px] table-fixed border-collapse select-none">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="mono sticky left-0 z-10 w-24 bg-surface px-3 py-2 text-left text-[9px] font-medium uppercase tracking-wider text-muted">
+                Day
+              </th>
+              {HOURS.map((h) => (
+                <th
+                  key={h}
+                  className="mono px-1 py-2 text-center text-[9px] font-medium text-muted"
+                  title={`${hourLabel(h)}–${hourLabel(h + 1)}`}
+                >
+                  {String(h).padStart(2, "0")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {views.map((view) => (
+              <tr key={view.date} className="border-b border-border/60 last:border-0">
+                <th className="mono sticky left-0 z-10 w-24 whitespace-nowrap bg-surface px-3 py-2 text-left text-[10px] font-normal text-foreground">
+                  {prettyDate(view.date)}
+                </th>
+                {HOURS.map((h) => (
+                  <SlotCell
+                    key={h}
+                    date={view.date}
+                    hour={h}
+                    state={cellState(view, h)}
+                    picked={selectedKeys.has(`${view.date}:${h}`)}
+                    onDown={onCellPointerDown}
+                    onKey={toggleSlot}
+                  />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
+        {(Object.keys(CELL_LABEL) as CellState[]).map((state) => (
+          <span key={state} className="flex items-center gap-1.5 text-[11px] text-muted">
+            <span className={`h-3 w-5 rounded-sm ${LEGEND_STYLE[state]}`} />
+            <span className="text-foreground">{CELL_LABEL[state]}</span>
+            {state === "open" ? "— book now" : state === "free" ? "— request anytime" : "— request as rush"}
+          </span>
+        ))}
+        <span className="flex items-center gap-1.5 text-[11px] text-muted">
+          <span className="h-3 w-5 rounded-sm outline outline-2 outline-offset-1 outline-foreground" />
+          <span className="text-foreground">Outlined</span> — selected
+        </span>
+      </div>
+      <p className="mono mt-3 text-[9px] uppercase tracking-wider text-muted">
+        Times are 24-hour · 09 = 09:00–10:00 · drag to select a range of hours
+      </p>
+
+      {openCount === 0 && (
+        <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-6 text-center text-sm text-muted">
+          No hours are open for instant booking in the next two weeks — you can still select any hours as a rush.
+        </p>
+      )}
+      {error && (
+        <p className="mt-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
+      )}
+
     </section>
   )
 }
