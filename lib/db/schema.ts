@@ -107,7 +107,44 @@ export const sharingTokens = sqliteTable("sharing_tokens", {
   expiresAt: text("expires_at"),
   revokedAt: text("revoked_at"),
   createdAt: text("created_at").$defaultFn(nowISO),
+  bookingMode: text("booking_mode", { enum: ["instant", "request"] }).notNull().default("instant"),
+  slotsPerWeek: integer("slots_per_week").notNull().default(3),
+  capacityPerDay: integer("capacity_per_day").notNull().default(2),
 })
+
+/** Whole-hour blocks you mark as open or busy for a given day. */
+export const availabilityRanges = sqliteTable(
+  "availability_ranges",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    date: text("date").notNull(),
+    startHour: integer("start_hour").notNull(),
+    endHour: integer("end_hour").notNull(),
+    status: text("status", { enum: ["open", "busy"] }).notNull().default("open"),
+    updatedAt: text("updated_at").$defaultFn(nowISO),
+  },
+  (t) => [uniqueIndex("availability_range_user_date_status_idx").on(t.userId, t.date, t.status)],
+)
+
+/** A booked hour. Capacity is enforced across all links for the same date. */
+export const bookings = sqliteTable(
+  "bookings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tokenId: integer("token_id").notNull().references(() => sharingTokens.id, { onDelete: "cascade" }),
+    clientId: integer("client_id").references(() => clients.id, { onDelete: "set null" }),
+    date: text("date").notNull(),
+    hour: integer("hour").notNull(),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    note: text("note"),
+    status: text("status", { enum: ["pending", "confirmed", "cancelled"] }).notNull().default("confirmed"),
+    taskId: integer("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    createdAt: text("created_at").$defaultFn(nowISO),
+  },
+  (t) => [uniqueIndex("booking_token_slot_idx").on(t.tokenId, t.date, t.hour)],
+)
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),

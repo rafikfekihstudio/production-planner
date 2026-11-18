@@ -2,41 +2,59 @@
 
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
-import { availability } from "@/lib/db/schema"
+import { availabilityRanges } from "@/lib/db/schema"
 import { and, eq } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { isDate } from "@/lib/assistant/time"
-import { isAvailabilityValue, type DayStatus } from "@/lib/sharing"
+import { HOUR_END, HOUR_START } from "@/lib/booking"
 
 async function requireUser() {
   const session = await auth()
   if (!session?.user?.id) throw new Error("Unauthorized")
-  return session.user
+  const userId = Number(session.user.id)
+  if (!Number.isInteger(userId)) throw new Error("Unauthorized")
+  return userId
 }
 
-/** Set one whole day. "unset" removes the override so the day falls back to your normal schedule. */
-export async function setDayAvailability(date: string, status: DayStatus) {
-  const user = await requireUser()
-  const userId = Number(user.id)
-  if (!Number.isInteger(userId) || !isDate(date)) throw new Error("Invalid date")
+function validateRange(date: string, status: string, startHour: number, endHour: number) {
+  if (!isDate(date)) throw new Error("Invalid date")
+  if (status !== "open" && status !== "busy") throw new Error("Invalid block type")
+  const start = Number(startHour)
+  const end = Number(endHour)
+  if (!Number.isInteger(start) || !Number.isInteger(end)) throw new Error("Invalid hours")
+  if (start < HOUR_START || end > HOUR_END || end <= start) throw new Error("Invalid hour range")
+  return { startHour: start, endHour: end }
+}
 
-  if (status === "unset") {
-    await db
-      .delete(availability)
-      .where(and(eq(availability.userId, userId), eq(availability.date, date)))
-  } else if (isAvailabilityValue(status)) {
-    const updatedAt = new Date().toISOString()
-    await db
-      .insert(availability)
-      .values({ userId, date, status, updatedAt })
-      .onConflictDoUpdate({
-        target: [availability.userId, availability.date],
-        set: { status, updatedAt },
-      })
-  } else {
-    throw new Error("Invalid availability status")
-  }
+/** Add or replace one hourly block for a day. */
+export async function setDayRange(date: string, status: "open" | "busy", startHour: number, endHour: number) {
+  const userId = await requireUser()
+  const range = validateRange(date, status, startHour, endHour)
+  const updatedAt = new Date().toISOString()
+  await db
+    .insert(availabilityRanges)
+    .values({ userId, date, status, ...range, updatedAt })
+    .onConflictDoUpdate({
+      target: [availabilityRanges.userId, availabilityRanges.date, availabilityRanges.status],
+      set: { ...range, updatedAt },
+    })
+  revalidatePath("/shared-views")
+  revalidatePath("/share")
+}
 
+export async function clearDayRange(date: string, status: "open" | "busy") {
+  const userId = await requireUser()
+  if (!isDate(date)) throw new Error("Invalid date")
+  if (status !== "open" && status !== "busy") throw new Error("Invalid block type")
+  await db
+    .delete(availabilityRanges)
+    .where(
+      and(
+        eq(availabilityRanges.userId, userId),
+        eq(availabilityRanges.date, date),
+        eq(availabilityRanges.status, status),
+      ),
+    )
   revalidatePath("/shared-views")
   revalidatePath("/share")
 }

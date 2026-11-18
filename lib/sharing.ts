@@ -9,9 +9,9 @@ export type ShareField = (typeof SHARE_FIELDS)[number]
 export const DEFAULT_SHARE_FIELDS: ShareField[] = [...SHARE_FIELDS]
 
 export const SHARE_FIELD_LABELS: Record<ShareField, string> = {
-  availability: "Open days",
-  progress: "Project progress",
-  tasks: "Task notes",
+  availability: "Bookable hours",
+  progress: "Project updates",
+  tasks: "Your work",
 }
 
 export function parseShareFields(raw: string | null): ShareField[] {

@@ -18,6 +18,14 @@ export type CreateShareInput = {
   clientId: number
   expiresInDays?: number | null
   fields?: ShareField[]
+  bookingMode?: "instant" | "request"
+  slotsPerWeek?: number
+  capacityPerDay?: number
+}
+
+function cleanInt(value: unknown, allowed: number[], fallback: number) {
+  const n = Number(value)
+  return Number.isInteger(n) && allowed.includes(n) ? n : fallback
 }
 
 export async function createShareLink(input: CreateShareInput) {
@@ -47,11 +55,32 @@ export async function createShareLink(input: CreateShareInput) {
       visibleFields: JSON.stringify(visibleFields),
       expiresAt,
       createdAt: new Date().toISOString(),
+      bookingMode: input.bookingMode === "request" ? "request" : "instant",
+      slotsPerWeek: cleanInt(input.slotsPerWeek, [1, 2, 3, 4, 5, 6], 3),
+      capacityPerDay: cleanInt(input.capacityPerDay, [1, 2, 3], 2),
     })
     .returning({ id: sharingTokens.id })
 
   revalidatePath("/shared-views")
   return { id: row.id, token, clientId, expiresAt, fields: visibleFields }
+}
+
+export async function updateShareLinkSettings(
+  id: number,
+  input: { bookingMode?: string; slotsPerWeek?: number; capacityPerDay?: number },
+) {
+  await requireUser()
+  if (!Number.isInteger(id) || id <= 0) throw new Error("Invalid link")
+  await db
+    .update(sharingTokens)
+    .set({
+      bookingMode: input.bookingMode === "request" ? "request" : "instant",
+      slotsPerWeek: cleanInt(input.slotsPerWeek, [1, 2, 3, 4, 5, 6], 3),
+      capacityPerDay: cleanInt(input.capacityPerDay, [1, 2, 3], 2),
+    })
+    .where(eq(sharingTokens.id, id))
+  revalidatePath("/shared-views")
+  revalidatePath("/share")
 }
 
 export async function revokeShareLink(id: number) {

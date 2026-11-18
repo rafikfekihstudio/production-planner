@@ -1,18 +1,20 @@
 import { notFound } from "next/navigation"
 import { db } from "@/lib/db"
-import { availability, clients, projects, settings, sharingTokens, tasks, users } from "@/lib/db/schema"
-import { and, eq, gte, inArray, isNotNull, lte } from "drizzle-orm"
-import { addDays, prettyDate, todayInTimezone, weekdayOf } from "@/lib/assistant/time"
+import { clients, projects, settings, sharingTokens, tasks } from "@/lib/db/schema"
+import { and, eq, isNotNull } from "drizzle-orm"
+import { prettyDate } from "@/lib/assistant/time"
 import { parseShareFields, type ShareField } from "@/lib/sharing"
+import { loadSharedCalendar } from "@/lib/booking-data"
+import { BookingPanel } from "@/components/share/booking-panel"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
 export const metadata = {
-  title: "Open Days & Updates",
+  title: "Book a time",
 }
 
-export default async function SharedAvailabilityPage({ params }: { params: Promise<{ token: string }> }) {
+export default async function SharedBookingPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params
   if (!token || token.length > 200) notFound()
 
@@ -22,30 +24,19 @@ export default async function SharedAvailabilityPage({ params }: { params: Promi
   const now = new Date().toISOString()
   if (link.expiresAt && link.expiresAt < now) notFound()
 
-  const client = await db.select({ name: clients.name, company: clients.company }).from(clients).where(eq(clients.id, link.clientId)).get()
+  const client = await db
+    .select({ name: clients.name, company: clients.company })
+    .from(clients)
+    .where(eq(clients.id, link.clientId))
+    .get()
   if (!client) notFound()
 
   const fields = parseShareFields(link.visibleFields)
   const has = (field: ShareField) => fields.includes(field)
-  const today = todayInTimezone()
-  const to = addDays(today, 60)
 
-  const [settingRow, availabilityRows, projectRows, taskRows] = await Promise.all([
+  const [settingRow, calendar, projectRows, taskRows] = await Promise.all([
     db.select({ value: settings.value }).from(settings).where(eq(settings.key, "businessName")).get(),
-    has("availability")
-      ? db
-          .select({ date: availability.date, status: availability.status })
-          .from(availability)
-          .innerJoin(users, eq(availability.userId, users.id))
-          .where(
-            and(
-              eq(users.role, "admin"),
-              inArray(availability.status, ["available", "tentative"]),
-              gte(availability.date, today),
-              lte(availability.date, to),
-            ),
-          )
-      : Promise.resolve([]),
+    has("availability") ? loadSharedCalendar(link, 14) : Promise.resolve({ days: [], views: [] }),
     has("progress")
       ? db
           .select({ id: projects.id, name: projects.name, progress: projects.clientVisibleProgress })
@@ -70,67 +61,21 @@ export default async function SharedAvailabilityPage({ params }: { params: Promi
     /* keep the fallback */
   }
 
-  const byDate = new Map<string, "available" | "tentative">()
-  for (const row of availabilityRows) {
-    if (row.status === "available") byDate.set(row.date, "available")
-    else if (!byDate.has(row.date)) byDate.set(row.date, "tentative")
-  }
-  const openDays = Array.from(byDate.entries()).sort(([a], [b]) => a.localeCompare(b))
   const updates = projectRows.filter((p) => p.progress && p.progress.trim())
+  const offered = calendar.views.filter((v) => v.openHour !== null && !v.full).length
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10 md:px-8 md:py-16">
       <header className="border-b border-border pb-6">
         <p className="mono text-[10px] uppercase tracking-[0.25em] text-gold">{businessName}</p>
-        <h1 className="serif mt-3 text-4xl text-foreground md:text-5xl">
-          Open days for {client.company || client.name}
-        </h1>
+        <h1 className="serif mt-3 text-4xl text-foreground md:text-5xl">Book a time with {client.name}</h1>
         <p className="mono mt-3 text-xs uppercase tracking-widest text-muted">
-          Shared privately with {client.name} · read only
+          Shared privately with {client.company || client.name} · {link.bookingMode === "request" ? "request a slot" : "book instantly"}
         </p>
       </header>
 
-      {fields.length === 0 && (
-        <p className="mt-8 rounded-lg border border-border bg-surface p-8 text-center text-sm text-muted">
-          Nothing has been shared on this link yet.
-        </p>
-      )}
-
       {has("availability") && (
-        <section className="mt-10">
-          <h2 className="mono text-[10px] uppercase tracking-widest text-muted">Days I&apos;m open to new work</h2>
-          {openDays.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-8 text-center text-sm text-muted">
-              No open days in the next 60 days yet. Check back soon.
-            </p>
-          ) : (
-            <ul className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {openDays.map(([date, status]) => (
-                <li
-                  key={date}
-                  className={`flex items-center justify-between rounded-lg border px-4 py-3 ${
-                    status === "available" ? "border-teal/40 bg-teal/10" : "border-gold/40 bg-gold/10"
-                  }`}
-                >
-                  <div>
-                    <p className="text-sm text-foreground">{prettyDate(date)}</p>
-                    <p className="mono mt-0.5 text-[10px] uppercase tracking-widest text-muted">{weekdayOf(date)}</p>
-                  </div>
-                  <span
-                    className={`mono text-[10px] uppercase tracking-widest ${
-                      status === "available" ? "text-teal" : "text-gold"
-                    }`}
-                  >
-                    {status === "available" ? "Available" : "Tentative"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="mt-3 text-[11px] text-muted">
-            These are full days, not specific times. Get in touch to arrange a time that suits you.
-          </p>
-        </section>
+        <BookingPanel token={link.token} views={calendar.views} mode={link.bookingMode} />
       )}
 
       {has("progress") && updates.length > 0 && (
@@ -162,6 +107,12 @@ export default async function SharedAvailabilityPage({ params }: { params: Promi
             ))}
           </ul>
         </section>
+      )}
+
+      {!has("availability") && offered === 0 && (
+        <p className="mt-8 rounded-lg border border-border bg-surface p-8 text-center text-sm text-muted">
+          Nothing has been shared on this link yet.
+        </p>
       )}
 
       <footer className="mt-14 border-t border-border pt-6 text-[11px] text-muted">
