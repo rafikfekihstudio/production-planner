@@ -562,13 +562,13 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         <table className="w-full min-w-[640px] table-fixed border-collapse select-none">
           <thead>
             <tr className="border-b border-border">
-              <th className="mono sticky left-0 z-10 w-24 bg-surface px-3 py-2 text-left text-[9px] font-medium uppercase tracking-wider text-muted">
+              <th className="mono sticky left-0 top-0 z-20 w-24 bg-surface px-3 py-2 text-left text-[9px] font-medium uppercase tracking-wider text-muted">
                 Day
               </th>
               {HOURS.map((h) => (
                 <th
                   key={h}
-                  className="mono px-1 py-2 text-center text-[9px] font-medium text-muted"
+                  className="mono sticky top-0 z-10 bg-surface px-1 py-2 text-center text-[9px] font-medium text-muted"
                   title={`${hourLabel(h)}–${hourLabel(h + 1)}`}
                 >
                   {String(h).padStart(2, "0")}
