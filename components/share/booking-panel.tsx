@@ -14,7 +14,6 @@ type DragState = {
   startKey: string
   pointerId: number
   moved: boolean
-  filled: boolean
   lastKey: string
   startX: number
   startY: number
@@ -239,23 +238,29 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         startKey: key,
         pointerId: e.pointerId,
         moved: false,
-        filled: false,
         lastKey: key,
         startX: e.clientX,
         startY: e.clientY,
+      }
+
+      const cellKeyAt = (x: number, y: number) => {
+        const under = document.elementFromPoint(x, y) as HTMLElement | null
+        return under?.closest<HTMLElement>("[data-slot]")?.dataset.slot
       }
 
       const onMove = (ev: PointerEvent) => {
         const drag = dragRef.current
         if (!drag || ev.pointerId !== drag.pointerId) return
         if (!drag.moved && Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < 4) return
-        drag.moved = true
-        const under = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null
-        const cell = under?.closest<HTMLElement>("[data-slot]")
-        const cellKey = cell?.dataset.slot
+        if (!drag.moved) {
+          drag.moved = true
+          // Add the origin as soon as a real drag starts; otherwise a short
+          // drag can cross into the next hour without ever selecting hour 07.
+          fillDrag(drag.startKey, drag.startKey)
+        }
+        const cellKey = cellKeyAt(ev.clientX, ev.clientY)
         if (!cellKey || cellKey === drag.lastKey) return
         fillDrag(drag.lastKey, cellKey)
-        drag.filled = true
         drag.lastKey = cellKey
       }
 
@@ -272,11 +277,16 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         const drag = dragRef.current
         if (!drag || ev.pointerId !== drag.pointerId) return
         detach()
-        // A jitter into a cell edge/scrollbar may set `moved` without ever
-        // filling a range. Treat that as a click so edge slots never swallow it.
-        if (drag.moved && drag.filled) return
-        const [d, h] = drag.startKey.split(":")
-        toggleSlot(d, Number(h))
+        if (!drag.moved) {
+          const [d, h] = drag.startKey.split(":")
+          toggleSlot(d, Number(h))
+          return
+        }
+        // Release can land on a new cell without a following move event.
+        // Close the range from the last seen cell to the released cell so the
+        // final hour (for example 22) is never dropped.
+        const cellKey = cellKeyAt(ev.clientX, ev.clientY)
+        if (cellKey && cellKey !== drag.lastKey) fillDrag(drag.lastKey, cellKey)
       }
 
       const onCancel = (ev: PointerEvent) => {
