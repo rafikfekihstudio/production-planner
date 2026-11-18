@@ -45,7 +45,6 @@ export default async function Page() {
         email: bookings.email,
         note: bookings.note,
         status: bookings.status,
-        rush: bookings.rush,
         tokenId: bookings.tokenId,
         clientName: clients.name,
       })
@@ -85,7 +84,6 @@ export default async function Page() {
     email: b.email,
     note: b.note,
     status: b.status,
-    rush: b.rush,
     tokenId: b.tokenId,
     clientName: b.clientName,
   }))

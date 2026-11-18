@@ -7,7 +7,7 @@ import { createBooking } from "@/lib/actions/booking"
 import { HOURS, hourLabel, type DayView } from "@/lib/booking"
 import { prettyDate } from "@/lib/assistant/time"
 
-type Selected = { date: string; hour: number; rush: boolean }
+type Selected = { date: string; hour: number }
 type Result = Selected & { ok: boolean; status?: "confirmed" | "pending"; error?: string }
 type CellState = "open" | "busy" | "taken" | "free"
 type DragState = {
@@ -18,7 +18,7 @@ type DragState = {
   startX: number
   startY: number
 }
-type SelectionGroup = { key: string; date: string; start: number; end: number; hours: number[]; rush: boolean }
+type SelectionGroup = { key: string; date: string; start: number; end: number; hours: number[] }
 
 const CELL_STYLE: Record<CellState, string> = {
   open: "bg-teal/90 text-background hover:bg-teal",
@@ -33,6 +33,10 @@ const CELL_LABEL: Record<CellState, string> = {
   taken: "Taken",
   free: "Free",
 }
+
+// A solid fill is visible even on the edge columns, where an outline gets
+// clipped by the sticky day column and the scroll container.
+const PICKED_STYLE = "bg-foreground text-background hover:bg-foreground"
 
 const LEGEND_STYLE: Record<CellState, string> = {
   open: "bg-teal/90",
@@ -54,13 +58,12 @@ function slotKey(slot: { date: string; hour: number }) {
 
 // Collapse selected hours into contiguous run chips so the bar stays one line.
 function groupSelection(selected: Selected[]): SelectionGroup[] {
-  const buckets = new Map<string, { date: string; hours: number[]; rush: boolean }>()
+  const buckets = new Map<string, { date: string; hours: number[] }>()
   for (const s of selected) {
-    const bucketKey = `${s.date}:${s.rush ? "r" : "o"}`
-    let bucket = buckets.get(bucketKey)
+    let bucket = buckets.get(s.date)
     if (!bucket) {
-      bucket = { date: s.date, hours: [], rush: s.rush }
-      buckets.set(bucketKey, bucket)
+      bucket = { date: s.date, hours: [] }
+      buckets.set(s.date, bucket)
     }
     bucket.hours.push(s.hour)
   }
@@ -73,12 +76,11 @@ function groupSelection(selected: Selected[]): SelectionGroup[] {
       const start = run[0]
       const end = run[run.length - 1]
       groups.push({
-        key: `${bucket.date}:${bucket.rush ? "r" : "o"}:${start}`,
+        key: `${bucket.date}:${start}`,
         date: bucket.date,
         start,
         end,
         hours: [...run],
-        rush: bucket.rush,
       })
     }
     for (let i = 1; i < hours.length; i++) {
@@ -104,7 +106,6 @@ type SlotCellProps = {
 
 const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onKey }: SlotCellProps) {
   const label = CELL_LABEL[state]
-  const isOpen = state === "open"
   return (
     // The whole cell is the hit target — including the outer edges of the 07:00
     // and 22:00 columns, which sit next to the sticky day column and scrollbar.
@@ -118,15 +119,15 @@ const SlotCell = memo(function SlotCell({ date, hour, state, picked, onDown, onK
           // activation (detail 0) reaches here.
           if (e.detail === 0) onKey(date, hour)
         }}
-        title={`${prettyDate(date)} · ${hourLabel(hour)}–${hourLabel(hour + 1)} — ${
-          isOpen ? "book now" : `${label} · request as rush`
-        }${picked ? " (selected — click to remove)" : " (click or drag to select)"}`}
-        aria-label={`${prettyDate(date)} at ${hourLabel(hour)} — ${label}, ${
-          isOpen ? "book now" : "request as rush"
-        }${picked ? ", selected" : ""}`}
+        title={`${prettyDate(date)} · ${hourLabel(hour)}–${hourLabel(hour + 1)} — ${label}, book this hour${
+          picked ? " (selected — click to remove)" : " (click or drag to select)"
+        }`}
+        aria-label={`${prettyDate(date)} at ${hourLabel(hour)} — ${label}, book this hour${
+          picked ? ", selected" : ""
+        }`}
         className={`block h-11 w-full cursor-crosshair touch-none select-none rounded-sm text-[9px] font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${
-          CELL_STYLE[state]
-        } ${picked ? "relative z-10 outline outline-2 outline-offset-1 outline-foreground" : ""}`}
+          picked ? PICKED_STYLE : CELL_STYLE[state]
+        }`}
       >
         {label}
       </button>
@@ -145,12 +146,8 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<Result[]>([])
 
-  const viewByDate = useMemo(() => new Map(views.map((v) => [v.date, v])), [views])
   const selectedKeys = useMemo(() => new Set(selected.map(slotKey)), [selected])
   const groups = useMemo(() => groupSelection(selected), [selected])
-  const openCount = views.filter((v) => v.openHour !== null && !v.full).length
-  const openSelected = selected.filter((s) => !s.rush).length
-  const rushSelected = selected.length - openSelected
 
   const commitSelection = useCallback((next: Selected[]) => {
     selectedRef.current = next
@@ -167,14 +164,13 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
         const key = `${date}:${hour}`
         if (seen.has(key)) continue
         seen.add(key)
-        const view = viewByDate.get(date)
-        additions.push({ date, hour, rush: view ? cellState(view, hour) !== "open" : true })
+        additions.push({ date, hour })
       }
       if (additions.length === 0) return
       commitSelection([...current, ...additions])
       setError(null)
     },
-    [viewByDate, commitSelection],
+    [commitSelection],
   )
 
   const removeSlots = useCallback(
@@ -319,7 +315,6 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
           name: form.name,
           email: form.email,
           note: form.note,
-          rush: slot.rush,
         })
         if (!result.ok || !result.status) {
           outcomes.push({ ...slot, ok: false, error: result.error ?? "Could not save this hour." })
@@ -355,23 +350,18 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
   }
 
   if (step === "done") {
-    const confirmed = results.filter((r) => r.ok && r.status === "confirmed").length
     const pending = results.filter((r) => r.ok && r.status === "pending").length
     const failed = results.filter((r) => !r.ok).length
     const heading = failed > 0
       ? "Some hours could not be saved"
-      : confirmed > 0 && pending > 0
-        ? "Bookings & requests received"
-        : pending > 0
-          ? "Requests received"
-          : "Bookings confirmed"
+      : pending > 0
+        ? "Requests received"
+        : "Bookings confirmed"
     const message = failed > 0
       ? "The hours listed below with an error were not saved. Refresh and try them again."
-      : confirmed > 0 && pending > 0
-        ? "Open hours are in the calendar. Rush requests are waiting for your approval."
-        : pending > 0
-          ? "I'll review these requests and confirm them shortly — nothing is on the calendar yet."
-          : "These hours are in the calendar. See you then."
+      : pending > 0
+        ? "I'll review these requests and confirm them shortly — nothing is on the calendar yet."
+        : "These hours are in the calendar. See you then."
 
     return (
       <section className="mt-10 rounded-lg border border-teal/40 bg-teal/10 p-6">
@@ -385,13 +375,6 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
             <li key={slotKey(r)} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
               <span className="text-sm text-foreground">
                 {prettyDate(r.date)} · {hourLabel(r.hour)}–{hourLabel(r.hour + 1)}
-              </span>
-              <span
-                className={`mono rounded-full border px-1.5 py-0.5 text-[9px] uppercase ${
-                  r.rush ? "border-gold/40 bg-gold/10 text-gold" : "border-teal/40 bg-teal/10 text-teal"
-                }`}
-              >
-                {r.rush ? "Rush" : "Book now"}
               </span>
               <span
                 className={`mono ml-auto text-[10px] uppercase tracking-wider ${
@@ -417,13 +400,9 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
   if (step === "form" && selected.length > 0) {
     const submitLabel = busy
       ? "Sending…"
-      : rushSelected === 0
-        ? mode === "request"
-          ? "Send requests"
-          : "Confirm bookings"
-        : openSelected === 0
-          ? "Send rush requests"
-          : "Submit selection"
+      : mode === "request"
+        ? "Send requests"
+        : "Confirm bookings"
 
     return (
       <section className="mt-10 rounded-lg border border-border bg-surface p-5">
@@ -439,22 +418,13 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
               <span className="text-sm text-foreground">
                 {prettyDate(s.date)} · {hourLabel(s.hour)}–{hourLabel(s.hour + 1)}
               </span>
-              <span
-                className={`mono ml-auto rounded-full border px-1.5 py-0.5 text-[9px] uppercase ${
-                  s.rush ? "border-gold/40 bg-gold/10 text-gold" : "border-teal/40 bg-teal/10 text-teal"
-                }`}
-              >
-                {s.rush ? "Rush request" : "Book now"}
-              </span>
             </li>
           ))}
         </ul>
         <p className="mt-3 text-xs leading-relaxed text-muted">
-          {openSelected > 0 && rushSelected > 0
-            ? "Open hours will be booked now. The other hours will be sent as rush requests for my approval."
-            : rushSelected > 0
-              ? "These hours aren't open for instant booking. They'll be sent as rush requests and only added to the calendar if I confirm them."
-              : "These hours will be booked now and added to the calendar."}
+          {mode === "request"
+            ? "These hours will be sent for approval and added to the calendar once confirmed."
+            : "These hours will be booked now and added to the calendar."}
         </p>
         <form onSubmit={submit} className="mt-5 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -528,14 +498,14 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="mono text-[10px] uppercase tracking-widest text-muted">Pick your hours</h2>
         <span className="mono text-[10px] uppercase tracking-widest text-teal">
-          {openCount} open {openCount === 1 ? "slot" : "slots"} · rush available any hour
+          {views.length} days available · pick any hours
         </span>
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
         Drag across hours to select a range, then drag again to keep adding. A plain click selects or removes a single
-        hour; the bar above groups your picks. <span className="text-teal">Open</span> hours book now, every other hour
-        — <span className="text-gold">Busy</span>, <span className="text-danger">Taken</span> or{" "}
-        <span className="text-foreground">Free</span> — becomes a rush request. One form covers all your picks.
+        hour; the bar above groups your picks. Every hour can be booked — <span className="text-teal">Open</span>,{" "}
+        <span className="text-gold">Busy</span>, <span className="text-danger">Taken</span> or{" "}
+        <span className="text-foreground">Free</span>. One form covers all your picks.
       </p>
 
       {/* Reserve the bar's space so the grid never jumps when the first hour is picked. */}
@@ -544,7 +514,7 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
           <div className="rounded-lg border border-teal/40 bg-surface p-2 shadow-lg">
             <div className="flex items-center gap-2">
               <span className="mono shrink-0 text-[10px] uppercase tracking-widest text-teal">
-                {selected.length}h<span className="hidden sm:inline"> · {openSelected} now · {rushSelected} rush</span>
+                {selected.length}h
               </span>
               <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1 py-1">
                 {groups.map((g) => (
@@ -555,7 +525,7 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
                     title={`Remove ${prettyDate(g.date)} ${hourLabel(g.start)}–${hourLabel(g.end + 1)}`}
                     className="mono flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-surface-2 px-2 py-1 text-[9px] text-muted hover:border-danger/50 hover:text-danger"
                   >
-                    <span className={`h-1.5 w-1.5 rounded-full ${g.rush ? "bg-gold" : "bg-teal"}`} />
+                    <span className="h-1.5 w-1.5 rounded-full bg-teal" />
                     {prettyDate(g.date)} {hourLabel(g.start)}
                     {g.end !== g.start ? `–${hourLabel(g.end)}` : ""} · {g.hours.length}h ×
                   </button>
@@ -634,23 +604,18 @@ export function BookingPanel({ token, views, mode }: { token: string; views: Day
           <span key={state} className="flex items-center gap-1.5 text-[11px] text-muted">
             <span className={`h-3 w-5 rounded-sm ${LEGEND_STYLE[state]}`} />
             <span className="text-foreground">{CELL_LABEL[state]}</span>
-            {state === "open" ? "— book now" : state === "free" ? "— request anytime" : "— request as rush"}
+            — bookable
           </span>
         ))}
         <span className="flex items-center gap-1.5 text-[11px] text-muted">
-          <span className="h-3 w-5 rounded-sm outline outline-2 outline-offset-1 outline-foreground" />
-          <span className="text-foreground">Outlined</span> — selected
+          <span className="h-3 w-5 rounded-sm bg-foreground" />
+          <span className="text-foreground">Filled</span> — selected
         </span>
       </div>
       <p className="mono mt-3 text-[9px] uppercase tracking-wider text-muted">
         Times are 24-hour · 09 = 09:00–10:00 · drag to select a range of hours
       </p>
 
-      {openCount === 0 && (
-        <p className="mt-4 rounded-lg border border-dashed border-border bg-surface p-6 text-center text-sm text-muted">
-          No hours are open for instant booking in the next two weeks — you can still select any hours as a rush.
-        </p>
-      )}
       {error && (
         <p className="mt-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
       )}

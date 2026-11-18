@@ -18,7 +18,6 @@ export type CreateBookingInput = {
   name?: unknown
   email?: unknown
   note?: unknown
-  rush?: unknown
 }
 
 export type CreateBookingResult = {
@@ -28,27 +27,22 @@ export type CreateBookingResult = {
   date?: string
   hour?: number
   duplicate?: boolean
-  rush?: boolean
 }
 
 type TxResult = { status?: "confirmed" | "pending"; duplicate?: boolean; error?: string }
 
 /**
  * Public booking endpoint. There is no session: the 256-bit link token is the
- * capability. Every date, hour, slot and capacity rule is recomputed on the
- * server from the database before anything is written, so a crafted client
- * cannot book a slot that was never offered to that link.
+ * capability. Every date, hour and capacity rule is recomputed on the server
+ * from the database before anything is written.
  *
- * A "rush" request is the exception that is deliberately allowed anywhere in
- * the rolling window: any date/hour, even busy or fully-booked ones. It is
- * always stored as pending and never creates a task until the operator
- * confirms it, so it can never silently collide with real work.
+ * Every hour in the rolling window is bookable. The link's booking mode decides
+ * whether it is confirmed immediately or held for approval; there is no rush
+ * path and no special offered-slot list.
  */
 export async function createBooking(input: CreateBookingInput): Promise<CreateBookingResult> {
   const token = typeof input.token === "string" ? input.token : ""
   if (!token || token.length > 200) return { ok: false, error: "This link is invalid." }
-
-  const rush = input.rush === true
 
   const date = typeof input.date === "string" ? input.date : ""
   if (!isDate(date)) return { ok: false, error: "Invalid date." }
@@ -84,20 +78,15 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
   const { views, days } = await loadSharedCalendar(link, 14)
   const view = views.find((v) => v.date === date)
 
-  if (rush) {
-    // Rush requests may target any hour on any date in the window, including
-    // busy and fully-booked hours. They are always pending, never instant.
-    if (!days.includes(date)) {
-      return { ok: false, error: "Please choose a date within the next two weeks." }
-    }
-  } else {
-    if (!view || view.openHour !== hour) {
-      return { ok: false, error: "That time is no longer available. Please pick another slot." }
-    }
-    if (view.full) return { ok: false, error: "That day is fully booked. Please pick another day." }
+  // Every hour in the rolling window is bookable; the Open/Busy/Taken/Free
+  // labels are informational only. Only the date window and capacity are hard
+  // rules.
+  if (!view || !days.includes(date)) {
+    return { ok: false, error: "Please choose a date within the next two weeks." }
   }
+  if (view.full) return { ok: false, error: "That day is fully booked. Please pick another day." }
 
-  const status: "confirmed" | "pending" = rush || link.bookingMode === "request" ? "pending" : "confirmed"
+  const status: "confirmed" | "pending" = link.bookingMode === "request" ? "pending" : "confirmed"
 
   try {
     const result: TxResult = await db.transaction(async (tx) => {
@@ -113,14 +102,12 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
         return { status: existing.status as "confirmed" | "pending", duplicate: true }
       }
 
-      if (!rush) {
-        const dayBookings = await tx
-          .select({ id: bookings.id })
-          .from(bookings)
-          .where(and(eq(bookings.date, date), ne(bookings.status, "cancelled")))
-        if (dayBookings.length >= link.capacityPerDay) {
-          return { error: "That day is fully booked. Please pick another day." }
-        }
+      const dayBookings = await tx
+        .select({ id: bookings.id })
+        .from(bookings)
+        .where(and(eq(bookings.date, date), ne(bookings.status, "cancelled")))
+      if (dayBookings.length >= link.capacityPerDay) {
+        return { error: "That day is fully booked. Please pick another day." }
       }
 
       const [created] = await tx
@@ -134,7 +121,6 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
           email,
           note,
           status,
-          rush,
           createdAt: now,
         })
         .returning({ id: bookings.id, status: bookings.status })
@@ -166,7 +152,7 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
     revalidatePath("/shared-views")
     revalidatePath("/timeline")
     revalidatePath("/")
-    return { ok: true, status: result.status, date, hour, duplicate: result.duplicate, rush }
+    return { ok: true, status: result.status, date, hour, duplicate: result.duplicate }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Could not save the booking. Please try again." }
   }
@@ -207,7 +193,7 @@ export async function setBookingStatus(id: number, status: "pending" | "confirme
     const [task] = await db
       .insert(tasks)
       .values({
-        title: `${booking.rush ? "Rush booking" : "Client booking"} — ${clientName}`,
+        title: `Client booking — ${clientName}`,
         description: booking.note,
         clientId: link?.clientId ?? booking.clientId ?? null,
         estimatedMinutes: 60,
