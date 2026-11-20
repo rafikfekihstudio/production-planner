@@ -124,17 +124,23 @@ const PLAN_SCHEMA = {
  */
 function modelCandidates(preferred?: string | null) {
   const configured = preferred?.trim() || process.env.GEMINI_MODEL?.trim()
+  // Lite is fastest and carries the largest free-tier quota, so it leads the
+  // default chain. The configured model (from /settings) still wins when set.
   const list = [
     configured,
+    "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.8-flash",
-    "gemini-3.5-flash-lite",
   ].filter((m): m is string => !!m)
   return [...new Set(list)]
 }
 
 const REQUEST_TIMEOUT_MS = 120_000
+// Each model gets a bounded slice of the chain's total time. A slow model must
+// not consume the whole budget — the other candidates can still answer.
+const MODEL_TIMEOUT_MS = 20_000
+const CHAIN_BUDGET_MS = 60_000
 
 /**
  * Thinking tokens are slow and count against the free-tier budget. The response
@@ -233,6 +239,13 @@ function isThinkingUnsupported(error: unknown) {
   return /thinking level .* is not supported/i.test(messageOf(error))
 }
 
+/** A per-model timeout is transient — the next model may still respond. */
+function isTimeoutError(error: unknown) {
+  return /model timeout|deadline expired|deadline_exceeded|timeout|timed out|etimedout|aborted/i.test(
+    messageOf(error),
+  )
+}
+
 /**
  * Free-tier quota is metered per model. A 429 on one model does not mean the
  * others are out, so the chain should rotate rather than give up.
@@ -293,25 +306,42 @@ export async function runPlanner(input: {
 
   const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: REQUEST_TIMEOUT_MS } })
   const contents = buildContents(input.transcript, input.context, input.repair)
+  const chainDeadline = Date.now() + CHAIN_BUDGET_MS
 
   async function generate(model: string, useThinking: boolean) {
-    return client.models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: PLAN_SCHEMA,
-        temperature: 0.25,
-        topP: 0.9,
-        maxOutputTokens: 8192,
-        ...(useThinking ? thinkingConfig(model, thinking) : {}),
-      },
-    })
+    const remaining = chainDeadline - Date.now()
+    if (remaining <= 0) throw new Error("model timeout")
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        client.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json",
+            responseSchema: PLAN_SCHEMA,
+            temperature: 0.25,
+            topP: 0.9,
+            maxOutputTokens: 8192,
+            ...(useThinking ? thinkingConfig(model, thinking) : {}),
+          },
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("model timeout")),
+            Math.min(MODEL_TIMEOUT_MS, remaining),
+          )
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   let lastError: unknown = null
   let quotaRetryMs: number | null = null
+  let timedOut = false
 
   for (const model of modelCandidates(prefs.model)) {
     try {
@@ -358,6 +388,12 @@ export async function runPlanner(input: {
         quotaRetryMs = quotaRetryMs === null ? delay : Math.min(quotaRetryMs, delay)
         continue
       }
+      // A slow or overloaded model should hand off to the next candidate rather
+      // than ending the whole request as a 504 after the first 20s slice.
+      if (isTimeoutError(error)) {
+        timedOut = true
+        continue
+      }
       if (isUnknownModel(error) || isModelBusy(error)) continue
       throw classify(error)
     }
@@ -369,6 +405,14 @@ export async function runPlanner(input: {
       429,
       "gemini_quota",
       quotaRetryMs,
+    )
+  }
+
+  if (timedOut) {
+    throw new AssistantError(
+      "Gemini is taking too long to answer right now. Nothing was changed — please try again.",
+      504,
+      "gemini_timeout",
     )
   }
 
