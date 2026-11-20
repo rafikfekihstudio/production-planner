@@ -4,6 +4,7 @@ import { buildPlannerContext, renderContext } from "@/lib/assistant/context"
 import { AssistantError, runPlanner } from "@/lib/assistant/gemini"
 import { loadAssistantPrefs } from "@/lib/assistant/preferences-store"
 import { repairPrompt } from "@/lib/assistant/prompt"
+import { renderPlanDisplay, resolvePlanDisplayDate } from "@/lib/assistant/plan-display"
 import { planRequestSchema } from "@/lib/assistant/schema"
 import { simulate, type PreviewStep } from "@/lib/assistant/simulate"
 import { loadCalendarState } from "@/lib/assistant/state"
@@ -14,6 +15,11 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const EMPTY: PreviewStep[] = []
+
+// A day view that also asks for a change must still use the planner so the
+// propose → preview → confirm flow applies to the mutation.
+const MUTATION_INTENT =
+  /\b(add|create|move|reschedule|change|update|delete|remove|cancel|shorten|lengthen|extend|mark|set|edit|reorder|swap|push|shift|clear|book|make|put|replace|insert|drop)\b/i
 
 export async function POST(request: Request) {
   const session = await auth()
@@ -50,6 +56,32 @@ export async function POST(request: Request) {
     const context = buildPlannerContext(state, new Date(), rules)
     const rendered = renderContext(context)
     const transcript = parsed.data.messages
+    const lastUserMessage = [...transcript].reverse().find((message) => message.role === "user")?.content ?? ""
+
+    // "What's on my calendar?" needs no model call: the blocks are already
+    // loaded above. Answering here keeps these replies instant and correct even
+    // when the Gemini key is throttled, instead of failing with a 504.
+    const instantViewDate = resolvePlanDisplayDate(lastUserMessage, context.today)
+    if (instantViewDate && !MUTATION_INTENT.test(lastUserMessage)) {
+      return NextResponse.json({
+        ok: true,
+        blocked: false,
+        reply: renderPlanDisplay(instantViewDate, context.scheduled, context.today),
+        mode: "answer",
+        notes: [],
+        operations: [],
+        preview: [],
+        issues: [],
+        repaired: false,
+        meta: {
+          model: "calendar",
+          today: context.today,
+          timezone: TIMEZONE,
+          latencyMs: Date.now() - startedAt,
+          existingBlocks: context.scheduled.length,
+        },
+      })
+    }
 
     let run = await runPlanner({ transcript, context: rendered, rules, prefs })
     let plan = run.plan
@@ -94,11 +126,22 @@ export async function POST(request: Request) {
     const blocked = !simulation.ok
     const operations = blocked ? [] : simulation.steps.map((step) => step.op)
 
+    // A mixed view + change request that the planner answered without proposing
+    // operations still gets its day view rendered from real calendar state. A
+    // small model cannot be trusted to copy a dozen blocks correctly.
+    const displayDate =
+      plan.mode === "answer" && operations.length === 0
+        ? resolvePlanDisplayDate(lastUserMessage, context.today)
+        : null
+    const reply = displayDate
+      ? renderPlanDisplay(displayDate, context.scheduled, context.today)
+      : plan.reply
+
     return NextResponse.json({
       ok: !blocked,
       blocked,
-      reply: plan.reply,
-      mode: plan.mode,
+      reply,
+      mode: displayDate ? "answer" : plan.mode,
       notes: plan.notes,
       operations,
       preview: simulation.steps,
