@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { buildPlannerContext, renderContext } from "@/lib/assistant/context"
-import { AssistantError, runPlanner } from "@/lib/assistant/gemini"
+import { AssistantError, runPlanner, type PlannerRun } from "@/lib/assistant/gemini"
+import {
+  expandRecurrence,
+  RECURRENCE_HINT,
+  recurrenceReply,
+  runRecurrencePlanner,
+} from "@/lib/assistant/recurrence"
 import { loadAssistantPrefs } from "@/lib/assistant/preferences-store"
 import { repairPrompt } from "@/lib/assistant/prompt"
 import { renderPlanDisplay, resolvePlanDisplayDate } from "@/lib/assistant/plan-display"
-import { planRequestSchema } from "@/lib/assistant/schema"
+import { planRequestSchema, type ModelPlan } from "@/lib/assistant/schema"
 import { simulate, type PreviewStep } from "@/lib/assistant/simulate"
 import { loadCalendarState } from "@/lib/assistant/state"
 import { TIMEZONE } from "@/lib/assistant/time"
@@ -83,12 +89,46 @@ export async function POST(request: Request) {
       })
     }
 
-    let run = await runPlanner({ transcript, context: rendered, rules, prefs })
-    let plan = run.plan
+    // "Two weeks, every day" is expanded in code from a compact template.
+    // Emitting ~70 dated operations from the model is what exhausted the chain
+    // budget; the template is only a few hundred tokens.
+    let plan: ModelPlan | null = null
+    let run: PlannerRun | null = null
+    let recurrenceModel: string | null = null
+
+    if (RECURRENCE_HINT.test(lastUserMessage)) {
+      const recurrence = await runRecurrencePlanner({ transcript, context: rendered, prefs })
+      if (recurrence) {
+        const expanded = expandRecurrence({
+          template: recurrence.template,
+          state,
+          today: context.today,
+          rules,
+        })
+        if (expanded.operations.length > 0) {
+          const candidate: ModelPlan = {
+            reply: recurrenceReply(expanded.operations),
+            mode: "propose",
+            operations: expanded.operations,
+            notes: expanded.notes.slice(0, 15),
+          }
+          if (simulate(candidate.operations, state, context.today, rules).ok) {
+            plan = candidate
+            recurrenceModel = recurrence.model
+          }
+        }
+      }
+    }
+
+    if (!plan) {
+      run = await runPlanner({ transcript, context: rendered, rules, prefs })
+      plan = run.plan
+    }
+
     let simulation = plan
       ? simulate(plan.operations, state, context.today, rules)
       : { ok: true, issues: [], steps: EMPTY }
-    let issues = [...run.issues, ...simulation.issues]
+    let issues = [...(run?.issues ?? []), ...simulation.issues]
     let repaired = false
 
     // One transparent repair pass. The model's first draft is checked against
@@ -148,7 +188,7 @@ export async function POST(request: Request) {
       issues: blocked ? issues.slice(0, 12) : [],
       repaired,
       meta: {
-        model: run.model,
+        model: recurrenceModel ? `${recurrenceModel}+recurrence` : (run?.model ?? "calendar"),
         today: context.today,
         timezone: TIMEZONE,
         latencyMs: Date.now() - startedAt,
