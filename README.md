@@ -1,36 +1,81 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Production Planner
 
-## Getting Started
+A local-first freelancer production dashboard built with Next.js, React, TypeScript, Drizzle, SQLite, and NextAuth. It combines a day/week timeline, a Gemini-powered scheduling assistant, voice input/output, Shared Views, and personal/work projects.
 
-First, run the development server:
+## Features
+
+- **Timeline** — day and week views from 07:00–23:00, with task creation, drag-to-move, edge resize, multi-select, group moves, and duration labels.
+- **Assistant** — proposes calendar operations with a preview; destructive actions require confirmation and support undo. It never claims a change is saved before the server writes it.
+- **Voice** — fast browser speech recognition by default, with optional natural Gemini text-to-speech replies.
+- **Shared Views** — hourly and whole-day share links with multi-select and drag behavior, without exposing internal project data.
+- **Projects** — client work and personal projects with stages from Idea to Archived.
+- **Per-user Gemini keys** — optional encrypted personal keys, with an optional shared `GEMINI_API_KEY` fallback.
+
+## Requirements
+
+- Node.js 20+
+- npm
+
+## Local setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Generate an auth secret and put it in `.env.local`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Set `AUTH_SECRET` to that value. Set a strong `SEED_ADMIN_PASSWORD` (at least 12 characters), then initialize the database and seed the first admin:
 
-## Learn More
+```bash
+npx drizzle-kit push
+npx tsx scripts/seed.ts
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000) and sign in with the `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` you configured. The login page does not display demo credentials.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Environment variables
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `AUTH_SECRET` | Yes | NextAuth sessions and assistant undo signatures |
+| `SEED_ADMIN_EMAIL` | No | Admin email for `scripts/seed.ts`; defaults to `admin@example.com` |
+| `SEED_ADMIN_NAME` | No | Admin display name for `scripts/seed.ts`; defaults to `Studio Admin` |
+| `SEED_ADMIN_PASSWORD` | For seeding | Admin password; at least 12 characters |
+| `GEMINI_API_KEY` | No | Optional shared Gemini fallback for local development or a private deployment |
+| `GEMINI_KEY_ENCRYPTION_SECRET` | For personal keys | AES-256-GCM secret for encrypted per-user keys; at least 32 characters |
 
-## Deploy on Vercel
+Generate the encryption secret the same way as `AUTH_SECRET`. Changing `GEMINI_KEY_ENCRYPTION_SECRET` later makes previously saved personal keys unreadable, so users would need to enter them again.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`.env*` and `/data/` are ignored by git. Never commit `.env.local`, API keys, or the local SQLite database.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Scripts
+
+```bash
+npm run dev     # development server
+npm run build   # production build
+npm run lint    # ESLint
+```
+
+Database and seed commands:
+
+```bash
+npx drizzle-kit push
+npx tsx scripts/seed.ts
+```
+
+## Security notes
+
+- Authentication uses NextAuth credentials with bcrypt password hashes.
+- AI credentials are read only on the server. Personal keys are encrypted at rest and are never returned to the browser.
+- The assistant proposes changes, shows a preview, confirms destructive actions, and supports undo; it does not auto-apply plans.
+- Shared Views use their own access model and do not expose stored API keys.
+
+## Deployment
+
+This app uses a local SQLite file under `data/`. For a hosted deployment, provide persistent storage for that file and set all server-side environment variables in the host. If you deploy with personal Gemini keys enabled, set `GEMINI_KEY_ENCRYPTION_SECRET` before users save keys.
