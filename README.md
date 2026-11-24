@@ -79,3 +79,7 @@ npx tsx scripts/seed.ts
 ## Deployment
 
 This app uses a local SQLite file under `data/`. For a hosted deployment, provide persistent storage for that file and set all server-side environment variables in the host. If you deploy with personal Gemini keys enabled, set `GEMINI_KEY_ENCRYPTION_SECRET` before users save keys.
+
+## License
+
+All rights reserved. See [LICENSE](./LICENSE). Commercial licensing or transfer of ownership may be available by separate agreement; contact `contact@raficfekih.online`.
