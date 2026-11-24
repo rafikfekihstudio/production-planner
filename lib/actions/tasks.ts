@@ -3,7 +3,7 @@
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { tasks } from "@/lib/db/schema"
-import { eq } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 
 function addMinutes(time: string, mins: number): string {
@@ -148,6 +148,56 @@ export async function resizeTask(id: number, minutes: number) {
 export async function moveTask(id: number, date: string, startTime: string) {
   return scheduleTask(id, date, startTime)
 }
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
+
+function isValidDateKey(value: string): boolean {
+  if (!DATE_PATTERN.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return false
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}` === value
+}
+
+/** Move a whole selection atomically so a failed update cannot leave it half-moved. */
+export async function moveTasks(moves: Array<{ id: number; date: string; time: string }>) {
+  await requireUser()
+  if (!Array.isArray(moves) || moves.length === 0) throw new Error("No slots selected")
+
+  const ids = moves.map((move) => move.id)
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate task in selection")
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) throw new Error("Invalid task id")
+  if (moves.some((move) => !isValidDateKey(move.date) || !TIME_PATTERN.test(move.time))) {
+    throw new Error("Invalid date or time")
+  }
+
+  await db.transaction(async (tx) => {
+    const rows = await tx.select().from(tasks).where(inArray(tasks.id, ids)).all()
+    if (rows.length !== ids.length) throw new Error("One or more tasks no longer exist")
+    const byId = new Map(rows.map((task) => [task.id, task]))
+
+    for (const move of moves) {
+      const task = byId.get(move.id)
+      if (!task) continue
+      await tx
+        .update(tasks)
+        .set({
+          scheduledDate: move.date,
+          startTime: move.time,
+          endTime: addMinutes(move.time, task.estimatedMinutes),
+          status: "scheduled",
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(tasks.id, move.id))
+        .run()
+    }
+  })
+
+  revalidatePath("/timeline")
+  revalidatePath("/")
+  return moves.length
+}
+
 export async function duplicateTaskAt(id: number, date: string, startTime: string) {
   await requireUser()
   const t = await db.select().from(tasks).where(eq(tasks.id, id)).get()

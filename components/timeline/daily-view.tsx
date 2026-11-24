@@ -4,6 +4,13 @@ import { useRef, useState, useEffect } from "react"
 import { Check, X } from "lucide-react"
 import type { Task, WorkType } from "./timeline-client"
 import { TIMELINE as T } from "@/lib/timeline-constants"
+import {
+  clamp,
+  formatDuration,
+  minutesToTime,
+  timeToMinutes,
+  type MoveItem,
+} from "@/lib/timeline-utils"
 
 const { SLOT_MINUTES, SLOT_HEIGHT, DAY_START_MIN, DAY_END_MIN } = T
 const SLOTS = (DAY_END_MIN - DAY_START_MIN) / SLOT_MINUTES
@@ -56,14 +63,26 @@ function layoutTasks(tasks: Task[]) {
   return { placed }
 }
 
-type DragState = { mode: "move" | "copy"; id: number; offsetY: number; originalTop: number; el: HTMLElement }
+type DragState = {
+  mode: "move" | "copy" | "group"
+  id: number
+  offsetY: number
+  originalTop: number
+  el: HTMLElement
+  group?: Task[]
+  deltaMin: number
+}
 
 export function DailyView({
   date,
   tasks,
   workTypes,
+  selectedIds,
+  onToggleSelection,
+  onSelectRange,
+  onClearSelection,
+  onMoveMany,
   onMove,
-  onResize,
   onScheduleDrop,
   onCreateAt,
   onSelect,
@@ -74,8 +93,12 @@ export function DailyView({
   date: string
   tasks: Task[]
   workTypes: WorkType[]
+  selectedIds: number[]
+  onToggleSelection: (id: number) => void
+  onSelectRange: (id: number, orderedIds: number[]) => void
+  onClearSelection: () => void
+  onMoveMany: (moves: MoveItem[]) => void
   onMove: (id: number, date: string, startTime: string) => void
-  onResize: (id: number, minutes: number) => void
   onScheduleDrop: (id: number, date: string, startTime: string) => void
   onCreateAt: (time: string) => void
   onSelect: (t: Task) => void
@@ -89,11 +112,14 @@ export function DailyView({
   const justDragged = useRef(false)
   const onMoveRef = useRef(onMove)
   const onDuplicateAtRef = useRef(onDuplicateAt)
+  const onMoveManyRef = useRef(onMoveMany)
   useEffect(() => { onMoveRef.current = onMove }, [onMove])
   useEffect(() => { onDuplicateAtRef.current = onDuplicateAt }, [onDuplicateAt])
+  useEffect(() => { onMoveManyRef.current = onMoveMany }, [onMoveMany])
 
   const [dragOver, setDragOver] = useState(false)
   const [nowMin, setNowMin] = useState<number | null>(null)
+  const [groupDragTime, setGroupDragTime] = useState<string | null>(null)
 
   useEffect(() => {
     const tick = () => {
@@ -107,6 +133,11 @@ export function DailyView({
 
   const { placed } = layoutTasks(tasks)
   const totalHeight = SLOTS * SLOT_HEIGHT
+  const selectedSet = new Set(selectedIds)
+  const orderedIds = [...tasks]
+    .filter((task) => task.startTime)
+    .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+    .map((task) => task.id)
 
   useEffect(() => {
     const container = containerRef.current
@@ -121,6 +152,10 @@ export function DailyView({
       return null
     }
 
+    function blockFor(id: number): HTMLElement | null {
+      return containerRef.current?.querySelector(`[data-resize-id="${id}"]`) as HTMLElement | null
+    }
+
     function onMouseDown(e: MouseEvent) {
       const src = e.target as HTMLElement | null
       if (src && src.closest && src.closest("[data-no-drag]")) return
@@ -133,36 +168,94 @@ export function DailyView({
       const startMin = h * 60 + m
       const top = minsToTop(startMin)
       const rect = block.getBoundingClientRect()
+      const isGroup = selectedIds.length > 1 && selectedIds.includes(task.id)
+      const group = isGroup ? tasks.filter((t) => selectedIds.includes(t.id) && t.startTime) : undefined
       dragRef.current = {
-        mode: e.altKey ? "copy" : "move",
+        mode: isGroup ? "group" : e.altKey ? "copy" : "move",
         id: task.id,
         offsetY: e.clientY - rect.top,
         originalTop: top,
         el: block,
+        group,
+        deltaMin: 0,
       }
       dragTopRef.current = top
-      block.style.opacity = e.altKey ? "0.5" : "0.85"
-      if (e.altKey) block.style.outline = "2px dashed #c9a961"
+      block.style.opacity = isGroup ? "0.85" : e.altKey ? "0.5" : "0.85"
+      if (e.altKey && !isGroup) block.style.outline = "2px dashed #c9a961"
+      if (isGroup) {
+        group?.forEach((item) => {
+          const el = blockFor(item.id)
+          if (el) el.style.zIndex = "25"
+        })
+      }
       justDragged.current = false
       e.preventDefault()
     }
 
     function onMouseMove(e: MouseEvent) {
-      if (!dragRef.current) return
+      const st = dragRef.current
+      if (!st) return
       const rect = container!.getBoundingClientRect()
-      const y = e.clientY - rect.top - dragRef.current.offsetY
+      const y = e.clientY - rect.top - st.offsetY
       const clamped = Math.max(0, Math.min(totalHeight - SLOT_HEIGHT, y))
       dragTopRef.current = clamped
-      dragRef.current.el.style.transform = `translateY(${clamped - dragRef.current.originalTop}px)`
+
+      if (st.mode === "group" && st.group) {
+        const original = tasks.find((t) => t.id === st.id)
+        if (!original?.startTime) return
+        const originalStart = timeToMinutes(original.startTime)
+        const rawDelta = snapMin(topToMin(clamped)) - originalStart
+        const starts = st.group.map((t) => timeToMinutes(t.startTime!))
+        const ends = st.group.map((t) => timeToMinutes(t.startTime!) + t.estimatedMinutes)
+        const minDelta = Math.ceil((DAY_START_MIN - Math.min(...starts)) / SLOT_MINUTES) * SLOT_MINUTES
+        const maxDelta = Math.floor((DAY_END_MIN - Math.max(...ends)) / SLOT_MINUTES) * SLOT_MINUTES
+        const delta = clamp(rawDelta, minDelta, maxDelta)
+        st.deltaMin = delta
+        const dy = (delta / SLOT_MINUTES) * SLOT_HEIGHT
+        st.group.forEach((item) => {
+          const el = blockFor(item.id)
+          if (el) el.style.transform = `translateY(${dy}px)`
+        })
+        setGroupDragTime(minutesToTime(originalStart + delta))
+        return
+      }
+
+      st.el.style.transform = `translateY(${clamped - st.originalTop}px)`
     }
 
     function onMouseUp() {
-      if (!dragRef.current) return
       const st = dragRef.current
+      if (!st) return
+
+      if (st.mode === "group" && st.group) {
+        const moves: MoveItem[] = st.group.map((item) => ({
+          id: item.id,
+          date,
+          time: minutesToTime(timeToMinutes(item.startTime!) + st.deltaMin),
+        }))
+        const changed = moves.some((move) => {
+          const item = st.group!.find((t) => t.id === move.id)
+          return item?.startTime !== move.time
+        })
+        if (changed) {
+          onMoveManyRef.current(moves)
+          justDragged.current = true
+        }
+        st.group.forEach((item) => {
+          const el = blockFor(item.id)
+          if (el) {
+            el.style.transform = ""
+            el.style.opacity = ""
+            el.style.zIndex = ""
+          }
+        })
+        setGroupDragTime(null)
+        dragRef.current = null
+        return
+      }
+
       const min = snapMin(topToMin(dragTopRef.current))
-      const hh = String(Math.floor(min / 60)).padStart(2, "0")
-      const mm = String(min % 60).padStart(2, "0")
-      const newTime = `${hh}:${mm}`
+      const newTime = minutesToTime(min)
       const original = tasks.find((t) => t.id === st.id)
       if (!original || newTime !== original.startTime) {
         if (st.mode === "copy") onDuplicateAtRef.current(st.id, date, newTime)
@@ -184,7 +277,7 @@ export function DailyView({
       window.removeEventListener("mousemove", onMouseMove, true)
       window.removeEventListener("mouseup", onMouseUp, true)
     }
-  }, [tasks, date])
+  }, [tasks, date, selectedIds, totalHeight])
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
@@ -292,10 +385,17 @@ export function DailyView({
                 key={task.id}
                 data-resize-id={task.id}
                 data-done={done ? "true" : undefined}
-                onClick={(e) => { e.stopPropagation(); if (justDragged.current) { justDragged.current = false; return } onSelect(task) }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (justDragged.current) { justDragged.current = false; return }
+                  if (e.ctrlKey || e.metaKey) { onToggleSelection(task.id); return }
+                  if (e.shiftKey) { onSelectRange(task.id, orderedIds); return }
+                  if (selectedIds.length > 0) onClearSelection()
+                  onSelect(task)
+                }}
                 className={`absolute rounded-md border overflow-hidden cursor-grab active:cursor-grabbing select-none group ${
                   done ? "border-teal/60 bg-teal/20" : "border-border/60"
-                }`}
+                } ${selectedSet.has(task.id) ? "z-10 ring-2 ring-gold" : ""}`}
                 style={{
                   top,
                   height,
@@ -310,7 +410,7 @@ export function DailyView({
                 <div className="px-2 py-1 text-xs pointer-events-none">
                   <div className={`font-medium truncate pl-5 pr-4 ${done ? "text-teal line-through" : "text-foreground"}`}>{task.title}</div>
                   <div className={`mono text-[10px] truncate ${done ? "text-teal/70" : "text-muted"}`}>
-                    {task.startTime}–{task.endTime} · {task.estimatedMinutes}m
+                    {task.startTime}–{task.endTime} · {formatDuration(task.estimatedMinutes)}
                   </div>
                 </div>
                 <button
@@ -347,6 +447,11 @@ export function DailyView({
           })}
         </div>
       </div>
+      {groupDragTime && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-md border border-border bg-surface px-3 py-1.5 mono text-xs text-foreground shadow-lg">
+          Move {selectedIds.length} slots → {date} at {groupDragTime}
+        </div>
+      )}
     </div>
   )
 }

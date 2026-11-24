@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState, useEffect, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Plus, ChevronLeft, ChevronRight, CalendarDays, CalendarRange, Trash2 } from "lucide-react"
+import { Plus, ChevronLeft, ChevronRight, CalendarDays, CalendarRange, Trash2, X } from "lucide-react"
 import { DailyView } from "./daily-view"
 import { WeeklyView } from "./weekly-view"
 import { TaskModal } from "./task-modal"
@@ -13,10 +13,12 @@ import {
   duplicateTask,
   duplicateTaskAt,
   moveTask,
+  moveTasks,
   resizeTask,
   scheduleTask,
   type TaskInput,
 } from "@/lib/actions/tasks"
+import type { MoveItem } from "@/lib/timeline-utils"
 
 export type Task = {
   id: number
@@ -77,15 +79,21 @@ export function TimelineClient({
   }>({})
   const [warning, setWarning] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null)
-  const [isPending, startTransition] = useTransition()
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const selectionAnchor = useRef<number | null>(null)
+  const [, startTransition] = useTransition()
 
   useEffect(() => {
+    // router.refresh() replaces the server snapshot; mirror it into the local optimistic state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTasks(initialTasks)
   }, [initialTasks])
 
-  function workTypeOf(id: number | null) {
-    return workTypes.find((w) => w.id === id) || null
-  }
+  useEffect(() => {
+    // Drop selections whose tasks disappeared after a refresh.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedIds((prev) => prev.filter((id) => initialTasks.some((task) => task.id === id)))
+  }, [initialTasks])
 
   function showWarning(msg: string) {
     setWarning(msg)
@@ -123,6 +131,73 @@ export function TimelineClient({
         router.refresh()
       }
       requestAnimationFrame(() => window.scrollTo(0, _scrollY))
+    })
+  }
+
+  function clearSelection() {
+    setSelectedIds([])
+    selectionAnchor.current = null
+  }
+
+  function toggleSelection(id: number) {
+    selectionAnchor.current = id
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  function selectRange(id: number, orderedIds: number[]) {
+    const anchor = selectionAnchor.current ?? orderedIds[0] ?? id
+    const a = orderedIds.indexOf(anchor)
+    const b = orderedIds.indexOf(id)
+    if (a < 0 || b < 0) {
+      toggleSelection(id)
+      return
+    }
+    const [lo, hi] = a < b ? [a, b] : [b, a]
+    const range = orderedIds.slice(lo, hi + 1)
+    setSelectedIds((prev) => [...new Set([...prev, ...range])])
+  }
+
+  function handleMoveMany(moves: MoveItem[]) {
+    if (moves.length === 0) return
+    const scrollY = window.scrollY
+    const moveById = new Map(moves.map((move) => [move.id, move]))
+    const movedIds = new Set(moves.map((move) => move.id))
+    for (const move of moves) {
+      const moving = tasks.find((t) => t.id === move.id)
+      if (!moving) continue
+      const clash = tasks.find(
+        (t) =>
+          !movedIds.has(t.id) &&
+          t.scheduledDate === move.date &&
+          t.startTime &&
+          rangesOverlap(move.time, moving.estimatedMinutes, t.startTime, t.estimatedMinutes),
+      )
+      if (clash) {
+        showWarning(`Overlaps with "${clash.title}".`)
+        break
+      }
+    }
+    setTasks((prev) =>
+      prev.map((task) => {
+        const move = moveById.get(task.id)
+        if (!move) return task
+        return {
+          ...task,
+          scheduledDate: move.date,
+          startTime: move.time,
+          endTime: addMinStr(move.time, task.estimatedMinutes),
+          status: "scheduled",
+        }
+      }),
+    )
+    startTransition(async () => {
+      try {
+        await moveTasks(moves)
+      } catch {
+        showWarning("Could not move the selected slots.")
+        router.refresh()
+      }
+      requestAnimationFrame(() => window.scrollTo(0, scrollY))
     })
   }
 
@@ -251,6 +326,7 @@ export function TimelineClient({
     if (!task) return
     setDeleteTarget(null)
     setTasks((prev) => prev.filter((t) => t.id !== task.id))
+    setSelectedIds((prev) => prev.filter((id) => id !== task.id))
     try {
       await deleteTask(task.id)
     } catch {
@@ -291,11 +367,13 @@ export function TimelineClient({
     d.setDate(d.getDate() + n)
     const next = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`
     setAnchor(next)
+    clearSelection()
     router.push(`/timeline?date=${next}&view=${view}`)
   }
 
   function changeView(v: "day" | "week") {
     setView(v)
+    clearSelection()
     router.push(`/timeline?date=${anchor}&view=${v}`)
   }
 
@@ -332,6 +410,7 @@ export function TimelineClient({
             onClick={() => {
               const _td = new Date(); const t = `${_td.getFullYear()}-${String(_td.getMonth()+1).padStart(2,"0")}-${String(_td.getDate()).padStart(2,"0")}`
               setAnchor(t)
+              clearSelection()
               router.push(`/timeline?date=${t}&view=${view}`)
             }}
             className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-muted hover:text-foreground"
@@ -354,6 +433,25 @@ export function TimelineClient({
         <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">{warning}</div>
       )}
 
+      {selectedIds.length > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-gold/40 bg-gold/10 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground">
+            <span className="mono uppercase tracking-widest text-gold">
+              {selectedIds.length} slots selected
+            </span>
+            <span className="text-muted">
+              Drag any selected slot to move them together. Ctrl/Cmd-click adjusts, Shift-click selects a range.
+            </span>
+          </div>
+          <button
+            onClick={clearSelection}
+            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground"
+          >
+            <X className="h-3 w-3" /> Clear
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4">
         <div className="min-w-0">
           {view === "day" ? (
@@ -361,8 +459,12 @@ export function TimelineClient({
               date={anchor}
               tasks={tasks.filter((t) => t.scheduledDate === anchor)}
               workTypes={workTypes}
+              selectedIds={selectedIds}
+              onToggleSelection={toggleSelection}
+              onSelectRange={selectRange}
+              onClearSelection={clearSelection}
+              onMoveMany={handleMoveMany}
               onMove={handleMove}
-              onResize={handleResize}
               onScheduleDrop={handleSchedule}
               onCreateAt={(time) => openCreate({ date: anchor, time })}
               onSelect={openEdit}
@@ -375,6 +477,11 @@ export function TimelineClient({
               weekStart={weekStart}
               tasks={tasks}
               workTypes={workTypes}
+              selectedIds={selectedIds}
+              onToggleSelection={toggleSelection}
+              onSelectRange={selectRange}
+              onClearSelection={clearSelection}
+              onMoveMany={handleMoveMany}
               onMove={handleMove}
               onResize={handleResize}
               onSelect={openEdit}
