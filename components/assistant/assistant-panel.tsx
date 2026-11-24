@@ -759,7 +759,7 @@ export function AssistantPanel() {
         const message =
           data?.error ??
           (response.status === 503
-            ? "The assistant is not configured yet. Add GEMINI_API_KEY to .env.local and restart."
+            ? "Add your Gemini API key in Settings → Gemini API key to use the assistant."
             : response.status === 401
               ? "Your session expired. Sign in again."
               : "The assistant could not answer. Nothing was changed.")

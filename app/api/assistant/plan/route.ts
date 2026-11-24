@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { MISSING_KEY_MESSAGE, resolveAssistantApiKey } from "@/lib/assistant/api-key"
 import { buildPlannerContext, renderContext } from "@/lib/assistant/context"
 import { AssistantError, runPlanner, type PlannerRun } from "@/lib/assistant/gemini"
 import {
@@ -37,16 +38,6 @@ export async function POST(request: Request) {
   const parsed = planRequestSchema.safeParse(body)
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request body.", code: "bad_request" }, { status: 400 })
-  }
-
-  if (!process.env.GEMINI_API_KEY) {
-    return NextResponse.json(
-      {
-        error: "The assistant is not configured yet. Add GEMINI_API_KEY to .env.local and restart the dev server.",
-        code: "missing_api_key",
-      },
-      { status: 503 },
-    )
   }
 
   const startedAt = Date.now()
@@ -89,6 +80,14 @@ export async function POST(request: Request) {
       })
     }
 
+    const assistantKey = await resolveAssistantApiKey(session.user.id)
+    if (!assistantKey) {
+      return NextResponse.json(
+        { error: MISSING_KEY_MESSAGE, code: "missing_api_key" },
+        { status: 503 },
+      )
+    }
+
     // "Two weeks, every day" is expanded in code from a compact template.
     // Emitting ~70 dated operations from the model is what exhausted the chain
     // budget; the template is only a few hundred tokens.
@@ -97,7 +96,12 @@ export async function POST(request: Request) {
     let recurrenceModel: string | null = null
 
     if (RECURRENCE_HINT.test(lastUserMessage)) {
-      const recurrence = await runRecurrencePlanner({ transcript, context: rendered, prefs })
+      const recurrence = await runRecurrencePlanner({
+        transcript,
+        context: rendered,
+        apiKey: assistantKey.key,
+        prefs,
+      })
       if (recurrence) {
         const expanded = expandRecurrence({
           template: recurrence.template,
@@ -121,7 +125,13 @@ export async function POST(request: Request) {
     }
 
     if (!plan) {
-      run = await runPlanner({ transcript, context: rendered, rules, prefs })
+      run = await runPlanner({
+        transcript,
+        context: rendered,
+        apiKey: assistantKey.key,
+        rules,
+        prefs,
+      })
       plan = run.plan
     }
 
@@ -138,6 +148,7 @@ export async function POST(request: Request) {
       const retry = await runPlanner({
         transcript,
         context: rendered,
+        apiKey: assistantKey.key,
         repair: repairPrompt(issues),
         rules,
         prefs,

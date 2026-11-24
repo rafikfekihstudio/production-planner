@@ -4,13 +4,16 @@ import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Check, Clock, Loader2, Plus, RotateCcw, ShieldCheck, Sparkles, Trash2 } from "lucide-react"
 import {
+  removeGeminiApiKey,
   restoreDefaultPrefs,
   restoreDefaultRules,
+  saveGeminiApiKey,
   savePrefs,
   saveRules,
   saveStudioName,
 } from "@/lib/actions/settings"
 import { businessNameProblem, MAX_BUSINESS_NAME_LENGTH } from "@/lib/brand"
+import type { AssistantKeyStatus } from "@/lib/assistant/api-key"
 import {
   KNOWN_MODELS,
   THINKING_OPTIONS,
@@ -35,6 +38,7 @@ type Props = {
   initialRules: ScheduleRules
   initialPrefs: AssistantPrefs
   initialBusinessName: string
+  initialKeyStatus: AssistantKeyStatus
   upcoming: UpcomingBlock[]
   today: string
 }
@@ -109,6 +113,7 @@ export function SettingsForm({
   initialRules,
   initialPrefs,
   initialBusinessName,
+  initialKeyStatus,
   upcoming,
   today,
 }: Props) {
@@ -123,6 +128,14 @@ export function SettingsForm({
   const [resetting, setResetting] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [message, setMessage] = useState<{ kind: "saved" | "error"; text: string } | null>(null)
+  const [keyStatus, setKeyStatus] = useState(initialKeyStatus)
+  const [apiKey, setApiKey] = useState("")
+  const [savingKey, setSavingKey] = useState(false)
+  const [removingKey, setRemovingKey] = useState(false)
+  const [confirmRemoveKey, setConfirmRemoveKey] = useState(false)
+  const [keyMessage, setKeyMessage] = useState<{ kind: "saved" | "error"; text: string } | null>(
+    null,
+  )
 
   const rulesDirty = JSON.stringify(rules) !== savedRules
   const prefsDirty = JSON.stringify(prefs) !== savedPrefs
@@ -272,6 +285,55 @@ export function SettingsForm({
       })
     } finally {
       setResetting(false)
+    }
+  }
+
+  async function saveKey() {
+    if (savingKey || !apiKey.trim() || !keyStatus.encryptionConfigured) return
+    setSavingKey(true)
+    setKeyMessage(null)
+    try {
+      const status = await saveGeminiApiKey(apiKey)
+      setKeyStatus(status)
+      setApiKey("")
+      setConfirmRemoveKey(false)
+      setKeyMessage({
+        kind: "saved",
+        text: "Personal Gemini API key saved. The assistant now uses it for this account.",
+      })
+      router.refresh()
+    } catch (error) {
+      setKeyMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Could not save the API key.",
+      })
+    } finally {
+      setSavingKey(false)
+    }
+  }
+
+  async function removeKey() {
+    if (removingKey) return
+    setRemovingKey(true)
+    setKeyMessage(null)
+    try {
+      const status = await removeGeminiApiKey()
+      setKeyStatus(status)
+      setConfirmRemoveKey(false)
+      setKeyMessage({
+        kind: "saved",
+        text: status.sharedKeyAvailable
+          ? "Personal key removed. The shared server key will be used instead."
+          : "Personal key removed. Add a key before using the assistant.",
+      })
+      router.refresh()
+    } catch (error) {
+      setKeyMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Could not remove the API key.",
+      })
+    } finally {
+      setRemovingKey(false)
     }
   }
 
@@ -524,6 +586,119 @@ export function SettingsForm({
               </div>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* Gemini API key ------------------------------------------------- */}
+      <section className="overflow-hidden rounded-lg border border-border bg-surface">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <ShieldCheck className="h-3.5 w-3.5 text-gold" />
+          <h2 className="mono text-[10px] uppercase tracking-widest text-muted">Gemini API key</h2>
+        </div>
+        <div className="p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs text-foreground">
+                Use your own Gemini key for planning, voice input, and natural voice replies.
+              </p>
+              <p
+                className={`mono mt-1 text-[10px] uppercase tracking-widest ${
+                  keyStatus.personalKeySaved
+                    ? "text-teal"
+                    : keyStatus.sharedKeyAvailable
+                      ? "text-gold"
+                      : "text-danger"
+                }`}
+              >
+                {keyStatus.personalKeySaved
+                  ? "Personal key active"
+                  : keyStatus.sharedKeyAvailable
+                    ? "Shared server key active"
+                    : "No key configured"}
+              </p>
+            </div>
+            {keyStatus.personalKeySaved ? (
+              <button
+                type="button"
+                onClick={() => setConfirmRemoveKey(true)}
+                disabled={removingKey}
+                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-danger/40 hover:text-danger disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Remove key
+              </button>
+            ) : null}
+          </div>
+
+          {keyMessage && (
+            <div
+              className={`mt-3 rounded-md border px-3 py-2 text-xs ${
+                keyMessage.kind === "saved"
+                  ? "border-teal/40 bg-teal/10 text-teal"
+                  : "border-danger/40 bg-danger/10 text-danger"
+              }`}
+            >
+              {keyMessage.text}
+            </div>
+          )}
+
+          {!keyStatus.encryptionConfigured && (
+            <div className="mt-3 rounded-md border border-gold/30 bg-gold/[0.06] px-3 py-2 text-xs text-muted">
+              Personal keys are disabled until the server operator sets{" "}
+              <span className="mono text-gold">GEMINI_KEY_ENCRYPTION_SECRET</span> to at least 32
+              characters and restarts the app.
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void saveKey()
+              }}
+              disabled={!keyStatus.encryptionConfigured || savingKey}
+              placeholder={keyStatus.personalKeySaved ? "Replace with a new key" : "Paste your Gemini API key"}
+              aria-label="Gemini API key"
+              autoComplete="new-password"
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-foreground focus:border-gold focus:outline-none disabled:opacity-50 placeholder:text-muted/60"
+            />
+            <button
+              type="button"
+              onClick={() => void saveKey()}
+              disabled={!apiKey.trim() || !keyStatus.encryptionConfigured || savingKey}
+              className="flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-gold px-4 py-2 text-xs font-medium text-background hover:bg-gold-soft disabled:opacity-40"
+            >
+              {savingKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              {savingKey ? "Saving…" : "Save key"}
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted">
+            Your key is encrypted on the server, scoped to this account, and never shown again after
+            you save it.
+          </p>
+
+          {confirmRemoveKey && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
+              <span className="text-[11px] text-danger">Remove your personal key?</span>
+              <button
+                type="button"
+                onClick={() => void removeKey()}
+                disabled={removingKey}
+                className="rounded-md bg-danger/15 px-3 py-1.5 text-xs text-danger hover:bg-danger/25 disabled:opacity-50"
+              >
+                {removingKey ? "Removing…" : "Yes, remove"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmRemoveKey(false)}
+                className="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </section>
 

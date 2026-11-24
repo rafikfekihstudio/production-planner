@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth"
 import { revalidatePath } from "next/cache"
 import { businessNameProblem } from "@/lib/brand"
 import { saveBusinessName } from "@/lib/business-name-store"
+import { deleteAssistantApiKey, saveAssistantApiKey } from "@/lib/assistant/api-key"
 import { resetAssistantPrefs, saveAssistantPrefs } from "@/lib/assistant/preferences-store"
 import type { AssistantPrefs } from "@/lib/assistant/preferences"
 import { resetScheduleRules, saveScheduleRules } from "@/lib/schedule-store"
@@ -62,4 +63,18 @@ export async function restoreDefaultPrefs() {
   const prefs = await resetAssistantPrefs()
   revalidateSettings()
   return prefs
+}
+
+export async function saveGeminiApiKey(input: string) {
+  const user = await requireUser()
+  const status = await saveAssistantApiKey(user.id, input)
+  revalidateSettings()
+  return status
+}
+
+export async function removeGeminiApiKey() {
+  const user = await requireUser()
+  const status = await deleteAssistantApiKey(user.id)
+  revalidateSettings()
+  return status
 }

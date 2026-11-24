@@ -125,22 +125,19 @@ const PLAN_SCHEMA = {
  */
 function modelCandidates(preferred?: string | null) {
   const configured = preferred?.trim() || process.env.GEMINI_MODEL?.trim()
-  // Lite is fastest and carries the largest free-tier quota, so it leads the
-  // default chain. The configured model (from /settings) still wins when set.
-  const list = [
-    configured,
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
-  ].filter((m): m is string => !!m)
+  // Only the fast lite model is used by default; the heavier flash builds
+  // (3.6/3.5/3.8) routinely hang for 20-60s on this key and turn every reply
+  // into a 504. The user's configured model (from /settings) still wins when set.
+  const list = configured
+    ? [configured, "gemini-3.5-flash-lite"]
+    : ["gemini-3.5-flash-lite"]
   return [...new Set(list)]
 }
 
 const REQUEST_TIMEOUT_MS = 120_000
 // Each model gets a bounded slice of the chain's total time. A slow model must
 // not consume the whole budget — the other candidates can still answer.
-const MODEL_TIMEOUT_MS = 20_000
+const MODEL_TIMEOUT_MS = 12_000
 const CHAIN_BUDGET_MS = 60_000
 
 /**
@@ -190,7 +187,7 @@ function classify(error: unknown): AssistantError {
   const message = messageOf(error)
   if (/api key|api_key|unauthenticated|permission_denied|invalid key/i.test(message)) {
     return new AssistantError(
-      "Gemini rejected the API key. Check GEMINI_API_KEY in .env.local and restart the dev server.",
+      "Gemini rejected the API key. Check the key saved in Settings → Gemini API key.",
       502,
       "gemini_auth",
     )
@@ -287,18 +284,12 @@ function buildContents(transcript: TranscriptMessage[], context: string, repair?
 export async function runPlanner(input: {
   transcript: TranscriptMessage[]
   context: string
+  apiKey: string
   repair?: string
   rules?: ScheduleRules
   prefs?: AssistantPrefs
 }): Promise<PlannerRun> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) {
-    throw new AssistantError(
-      "GEMINI_API_KEY is not set. Add it to .env.local and restart the dev server.",
-      503,
-      "missing_api_key",
-    )
-  }
+  const apiKey = input.apiKey
 
   const rules = input.rules ?? DEFAULT_RULES
   const prefs = input.prefs ?? DEFAULT_PREFS

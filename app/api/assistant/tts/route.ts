@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { MISSING_KEY_MESSAGE, resolveAssistantApiKey } from "@/lib/assistant/api-key"
 import { GoogleGenAI } from "@google/genai"
 
 export const runtime = "nodejs"
@@ -67,18 +68,15 @@ export async function POST(request: Request) {
     )
   }
 
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) {
+  const assistantKey = await resolveAssistantApiKey(session.user.id)
+  if (!assistantKey) {
     return NextResponse.json(
-      {
-        error: "The assistant is not configured yet. Add GEMINI_API_KEY to .env.local and restart the dev server.",
-        code: "missing_api_key",
-      },
+      { error: MISSING_KEY_MESSAGE, code: "missing_api_key" },
       { status: 503 },
     )
   }
 
-  const client = getClient(apiKey)
+  const client = getClient(assistantKey.key)
 
   for (const [index, model] of MODELS.entries()) {
     const timeoutMs = index === 0 ? TTS_TIMEOUT_MS : FALLBACK_TIMEOUT_MS

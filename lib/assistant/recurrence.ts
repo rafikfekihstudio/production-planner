@@ -3,7 +3,6 @@ import { z } from "zod"
 import { DAY_END_MIN, DAY_START_MIN } from "@/lib/timeline-constants"
 import { ruleViolations, weekdayKey, type ScheduleRules } from "@/lib/schedule"
 import { addDays, isDate, prettyDate, toClock, toMinutes } from "./time"
-import { AssistantError } from "./gemini"
 import type { AssistantPrefs } from "./preferences"
 import { MAX_OPERATIONS, type Operation } from "./schema"
 import type { CalendarArea, CalendarState } from "./state"
@@ -140,12 +139,10 @@ function recurrenceModels(preferred?: string | null) {
 export async function runRecurrencePlanner(input: {
   transcript: TranscriptMessage[]
   context: string
+  apiKey: string
   prefs?: AssistantPrefs
 }): Promise<{ template: RecurrenceTemplate; model: string } | null> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new AssistantError("GEMINI_API_KEY is not set.", 503, "missing_api_key")
-
-  const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 30_000 } })
+  const client = new GoogleGenAI({ apiKey: input.apiKey, httpOptions: { timeout: 30_000 } })
   const contents = recurrenceContents(input.transcript, input.context)
   const deadline = Date.now() + TEMPLATE_CHAIN_MS
 

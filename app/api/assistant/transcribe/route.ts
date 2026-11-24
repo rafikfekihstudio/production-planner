@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { GoogleGenAI } from "@google/genai"
+import { MISSING_KEY_MESSAGE, resolveAssistantApiKey } from "@/lib/assistant/api-key"
 import { loadAssistantPrefs } from "@/lib/assistant/preferences-store"
 
 export const runtime = "nodejs"
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic"
 
 // Per-model budget. A model stuck in high demand (503) can otherwise take ~2 minutes
 // before the SDK surfaces the error; abort sooner so we rotate to the next candidate.
-const MODEL_TIMEOUT_MS = 20_000
+const MODEL_TIMEOUT_MS = 15_000
 
 export async function POST(request: Request) {
   const session = await auth()
@@ -23,31 +24,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing audio payload.", code: "bad_request" }, { status: 400 })
   }
 
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) {
+  const assistantKey = await resolveAssistantApiKey(session.user.id)
+  if (!assistantKey) {
     return NextResponse.json(
-      {
-        error: "The assistant is not configured yet. Add GEMINI_API_KEY to .env.local and restart the dev server.",
-        code: "missing_api_key",
-      },
+      { error: MISSING_KEY_MESSAGE, code: "missing_api_key" },
       { status: 503 },
     )
   }
 
   try {
     const prefs = await loadAssistantPrefs().catch(() => null)
-    const client = new GoogleGenAI({ apiKey })
+    const client = new GoogleGenAI({ apiKey: assistantKey.key })
     const configured = prefs?.model?.trim() || process.env.GEMINI_MODEL?.trim()
-    // Keep the known-reliable lite model available but try the configured one first.
-    const candidates = [
-      configured,
-      "gemini-3.5-flash-lite",
-      "gemini-3.6-flash",
-      "gemini-3.5-flash",
-    ].filter((m): m is string => !!m)
+    const candidates = configured
+      ? [configured, "gemini-3.5-flash-lite"]
+      : ["gemini-3.5-flash-lite"]
 
     let text = ""
-    let lastError: unknown = null
     let usedModel: string | null = null
     for (const model of [...new Set(candidates)]) {
       const t0 = Date.now()
@@ -67,7 +60,7 @@ export async function POST(request: Request) {
                   },
                 },
                 {
-                  text: "Transcribe the spoken audio verbatim. Return only the transcript text, no commentary, no quotes, no markdown.",
+                  text: "Transcribe the spoken audio verbatim. Return only the transcript text, no commentary, no quotes, no markdown. If there is no intelligible speech, return an empty string.",
                 },
               ],
             },
@@ -83,7 +76,6 @@ export async function POST(request: Request) {
         console.log(`[assistant/transcribe] model=${model} ok ms=${Date.now() - t0} chars=${text.length}`)
         if (text) break
       } catch (error) {
-        lastError = error
         const timedOut = controller.signal.aborted
         const msg = error instanceof Error ? error.message : String(error)
         console.log(
@@ -105,11 +97,22 @@ export async function POST(request: Request) {
     }
 
     if (!text) {
-      if (lastError) throw lastError
-    }
-
-    if (!text) {
-      return NextResponse.json({ error: "Could not transcribe the audio.", code: "empty_transcript", model: usedModel }, { status: 502 })
+      // No candidate produced a transcript. When every model failed with an
+      // overload/timeout (unexpected errors are thrown above), report a clean
+      // "busy" message instead of leaking the raw "operation was aborted" text.
+      if (!usedModel) {
+        return NextResponse.json(
+          {
+            error: "Gemini is temporarily busy. Please try again in a moment.",
+            code: "model_busy",
+          },
+          { status: 503 },
+        )
+      }
+      return NextResponse.json(
+        { error: "Could not transcribe the audio.", code: "empty_transcript", model: usedModel },
+        { status: 502 },
+      )
     }
     return NextResponse.json({ text, model: usedModel })
   } catch (error) {
