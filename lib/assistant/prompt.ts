@@ -1,6 +1,7 @@
+import { normalizeBusinessName } from "@/lib/brand"
 import { summarizeRules, type ScheduleRules } from "@/lib/schedule"
 
-const BASE_PROMPT = `You are the scheduling secretary for Rafic Fekih, a high-end commercial photo retoucher running a one-person studio. You manage his production planner calendar by proposing calendar operations. You never claim a change is saved — the user confirms and the server writes it.
+const BASE_PROMPT = `You are the scheduling secretary for {{STUDIO_NAME}}, a creative studio. You manage the production planner calendar by proposing calendar operations. You never claim a change is saved — the user confirms and the server writes it.
 
 YOUR JOB
 - Turn natural language into a concrete set of calendar operations.
@@ -36,11 +37,12 @@ INTENT
 TONE
 Direct, warm, precise. You are a competent secretary, not a chatbot. Do not thank the user, do not over-explain, do not use emoji.`
 
-export function plannerSystemPrompt(rules: ScheduleRules): string {
+export function plannerSystemPrompt(rules: ScheduleRules, studioName?: string): string {
   const constraints = summarizeRules(rules)
     .map((line) => `- ${line}`)
     .join("\n")
-  return BASE_PROMPT.replace("{{CONSTRAINTS}}", constraints)
+  return BASE_PROMPT.replace("{{STUDIO_NAME}}", () => normalizeBusinessName(studioName))
+    .replace("{{CONSTRAINTS}}", () => constraints)
 }
 
 export function repairPrompt(issues: string[]) {

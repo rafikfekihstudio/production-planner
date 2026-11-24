@@ -2,6 +2,8 @@
 
 import { auth } from "@/lib/auth"
 import { revalidatePath } from "next/cache"
+import { businessNameProblem } from "@/lib/brand"
+import { saveBusinessName } from "@/lib/business-name-store"
 import { resetAssistantPrefs, saveAssistantPrefs } from "@/lib/assistant/preferences-store"
 import type { AssistantPrefs } from "@/lib/assistant/preferences"
 import { resetScheduleRules, saveScheduleRules } from "@/lib/schedule-store"
@@ -22,6 +24,16 @@ function revalidateSettings() {
   revalidatePath("/settings")
   revalidatePath("/timeline")
   revalidatePath("/")
+  revalidatePath("/login")
+}
+
+export async function saveStudioName(input: string) {
+  await requireUser()
+  const problem = businessNameProblem(input)
+  if (problem) throw new Error(problem)
+  const name = await saveBusinessName(input)
+  revalidateSettings()
+  return name
 }
 
 export async function saveRules(input: ScheduleRules) {

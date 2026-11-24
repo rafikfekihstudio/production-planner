@@ -13,6 +13,7 @@ import {
   LogOut,
 } from "lucide-react"
 import { signOut } from "next-auth/react"
+import { DEFAULT_BUSINESS_NAME } from "@/lib/brand"
 
 const nav = [
   { label: "Overview", href: "/", icon: LayoutDashboard },
@@ -24,13 +25,15 @@ const nav = [
   { label: "Settings", href: "/settings", icon: Settings },
 ]
 
-export function Sidebar() {
+export function Sidebar({ businessName }: { businessName: string }) {
   const pathname = usePathname()
   return (
     <aside className="hidden md:flex md:w-60 md:flex-col md:border-r md:border-border bg-surface">
       <div className="px-5 py-6 border-b border-border">
-        <div className="serif text-xl text-foreground">Rafic Fekih</div>
-        <div className="mono text-[10px] uppercase tracking-[0.2em] text-muted mt-1">Production Planner</div>
+        <div className="serif text-xl text-foreground">{businessName}</div>
+        {businessName !== DEFAULT_BUSINESS_NAME && (
+          <div className="mono text-[10px] uppercase tracking-[0.2em] text-muted mt-1">Production Planner</div>
+        )}
       </div>
       <nav className="flex-1 px-3 py-4 space-y-1">
         {nav.map((item) => {

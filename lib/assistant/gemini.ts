@@ -1,4 +1,5 @@
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai"
+import { loadBusinessName } from "@/lib/business-name-store"
 import { plannerSystemPrompt } from "./prompt"
 import { modelPlanSchema, type ModelPlan } from "./schema"
 import { DEFAULT_RULES, type ScheduleRules } from "@/lib/schedule"
@@ -302,7 +303,8 @@ export async function runPlanner(input: {
   const rules = input.rules ?? DEFAULT_RULES
   const prefs = input.prefs ?? DEFAULT_PREFS
   const thinking = normalizeThinking(prefs.thinking)
-  const systemInstruction = plannerSystemPrompt(rules)
+  const businessName = await loadBusinessName()
+  const systemInstruction = plannerSystemPrompt(rules, businessName)
 
   const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: REQUEST_TIMEOUT_MS } })
   const contents = buildContents(input.transcript, input.context, input.repair)

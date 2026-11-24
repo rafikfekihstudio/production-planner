@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { DEFAULT_BUSINESS_NAME } from "@/lib/brand";
+import { loadBusinessName } from "@/lib/business-name-store";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,10 +14,16 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Rafic Fekih Studio — Production Planner",
-  description: "Visual production scheduling for freelance creative work.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const businessName = await loadBusinessName();
+  return {
+    title:
+      businessName === DEFAULT_BUSINESS_NAME
+        ? DEFAULT_BUSINESS_NAME
+        : `${businessName} — Production Planner`,
+    description: "Visual production scheduling for freelance creative work.",
+  };
+}
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

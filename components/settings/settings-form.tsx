@@ -8,7 +8,9 @@ import {
   restoreDefaultRules,
   savePrefs,
   saveRules,
+  saveStudioName,
 } from "@/lib/actions/settings"
+import { businessNameProblem, MAX_BUSINESS_NAME_LENGTH } from "@/lib/brand"
 import {
   KNOWN_MODELS,
   THINKING_OPTIONS,
@@ -32,6 +34,7 @@ import {
 type Props = {
   initialRules: ScheduleRules
   initialPrefs: AssistantPrefs
+  initialBusinessName: string
   upcoming: UpcomingBlock[]
   today: string
 }
@@ -102,10 +105,18 @@ function DayChip({
   )
 }
 
-export function SettingsForm({ initialRules, initialPrefs, upcoming, today }: Props) {
+export function SettingsForm({
+  initialRules,
+  initialPrefs,
+  initialBusinessName,
+  upcoming,
+  today,
+}: Props) {
   const router = useRouter()
   const [rules, setRules] = useState<ScheduleRules>(() => clone(initialRules))
   const [prefs, setPrefs] = useState<AssistantPrefs>(() => clone(initialPrefs))
+  const [businessName, setBusinessName] = useState(initialBusinessName)
+  const [savedBusinessName, setSavedBusinessName] = useState(initialBusinessName)
   const [savedRules, setSavedRules] = useState(() => JSON.stringify(initialRules))
   const [savedPrefs, setSavedPrefs] = useState(() => JSON.stringify(initialPrefs))
   const [saving, setSaving] = useState(false)
@@ -115,10 +126,13 @@ export function SettingsForm({ initialRules, initialPrefs, upcoming, today }: Pr
 
   const rulesDirty = JSON.stringify(rules) !== savedRules
   const prefsDirty = JSON.stringify(prefs) !== savedPrefs
-  const dirty = rulesDirty || prefsDirty
+  const businessNameDirty = businessName !== savedBusinessName
+  const dirty = rulesDirty || prefsDirty || businessNameDirty
 
   const problems = useMemo(() => {
     const found: string[] = []
+    const nameProblem = businessNameProblem(businessName)
+    if (nameProblem) found.push(`Studio name: ${nameProblem}`)
     for (const day of WEEKDAYS) {
       const workDay = rules.workDays[day]
       if (!workDay.enabled) continue
@@ -135,7 +149,7 @@ export function SettingsForm({ initialRules, initialPrefs, upcoming, today }: Pr
       if (window.days.length === 0) found.push(`${window.label}: pick at least one day.`)
     }
     return found
-  }, [rules])
+  }, [rules, businessName])
 
   const summary = useMemo(() => summarizeWorkDays(rules), [rules])
   const promptLines = useMemo(() => summarizeRules(rules), [rules])
@@ -222,6 +236,11 @@ export function SettingsForm({ initialRules, initialPrefs, upcoming, today }: Pr
         setPrefs(next)
         setSavedPrefs(JSON.stringify(next))
       }
+      if (businessNameDirty) {
+        const next = await saveStudioName(businessName)
+        setBusinessName(next)
+        setSavedBusinessName(next)
+      }
       setMessage({ kind: "saved", text: "Saved. The assistant now uses these rules." })
       router.refresh()
     } catch (error) {
@@ -292,6 +311,28 @@ export function SettingsForm({ initialRules, initialPrefs, upcoming, today }: Pr
           </ul>
         </div>
       )}
+
+      {/* Studio name ---------------------------------------------------- */}
+      <section className="rounded-lg border border-border bg-surface p-4">
+        <h2 className="serif text-xl text-foreground">Studio name</h2>
+        <p className="mono mt-1 text-[10px] uppercase tracking-widest text-muted">
+          Used on the sign-in page, sidebar, browser title, and by the assistant
+        </p>
+        <div className="mt-4 max-w-md">
+          <label className="mono mb-1 block text-[10px] uppercase tracking-widest text-muted">
+            Studio name
+          </label>
+          <input
+            value={businessName}
+            onChange={(e) => setBusinessName(e.target.value)}
+            maxLength={MAX_BUSINESS_NAME_LENGTH}
+            className="w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-foreground focus:border-gold focus:outline-none"
+          />
+          <p className="mt-1 text-[11px] text-muted">
+            Set the name of the studio using this installation. Defaults to Production Planner.
+          </p>
+        </div>
+      </section>
 
       {/* Existing blocks vs edited rules -------------------------------- */}
       {conflicts.length > 0 && (

@@ -10,6 +10,7 @@ A local-first freelancer production dashboard built with Next.js, React, TypeScr
 - **Shared Views** — hourly and whole-day share links with multi-select and drag behavior, without exposing internal project data.
 - **Projects** — client work and personal projects with stages from Idea to Archived.
 - **Per-user Gemini keys** — optional encrypted personal keys, with an optional shared `GEMINI_API_KEY` fallback.
+- **Configurable studio name** — set your own name under **Settings → Studio name**; no personal branding is hardcoded.
 
 ## Requirements
 
@@ -37,7 +38,7 @@ npx tsx scripts/seed.ts
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with the `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` you configured. The login page does not display demo credentials.
+Open [http://localhost:3000](http://localhost:3000) and sign in with the `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` you configured. The login page does not display demo credentials. The studio name defaults to **Production Planner**; change it later under **Settings → Studio name**, or preseed it with `SEED_BUSINESS_NAME`.
 
 ## Environment variables
 
@@ -47,6 +48,7 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the `SEED_A
 | `SEED_ADMIN_EMAIL` | No | Admin email for `scripts/seed.ts`; defaults to `admin@example.com` |
 | `SEED_ADMIN_NAME` | No | Admin display name for `scripts/seed.ts`; defaults to `Studio Admin` |
 | `SEED_ADMIN_PASSWORD` | For seeding | Admin password; at least 12 characters |
+| `SEED_BUSINESS_NAME` | No | Studio name for a new install; defaults to `Production Planner` and is editable in Settings |
 | `GEMINI_API_KEY` | No | Optional shared Gemini fallback for local development or a private deployment |
 | `GEMINI_KEY_ENCRYPTION_SECRET` | For personal keys | AES-256-GCM secret for encrypted per-user keys; at least 32 characters |
 

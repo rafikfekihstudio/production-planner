@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs"
+import { normalizeBusinessName } from "../lib/brand"
 import { db } from "../lib/db"
 import { users, workTypes, settings } from "../lib/db/schema"
 import { eq } from "drizzle-orm"
@@ -50,7 +51,7 @@ async function seed() {
 
   // default settings
   const defaults: Record<string, string> = {
-    businessName: JSON.stringify("Rafic Fekih Studio"),
+    businessName: JSON.stringify(normalizeBusinessName(process.env.SEED_BUSINESS_NAME)),
     workingDays: JSON.stringify([1, 2, 3, 4, 5]),
     dailyHours: JSON.stringify({ start: "09:00", end: "18:00" }),
     timezone: JSON.stringify("Africa/Tunis"),
