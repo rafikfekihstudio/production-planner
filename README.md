@@ -82,6 +82,15 @@ npx tsx scripts/seed.ts
 
 This app uses a local SQLite file under `data/`. For a hosted deployment, provide persistent storage for that file and set all server-side environment variables in the host. If you deploy with personal Gemini keys enabled, set `GEMINI_KEY_ENCRYPTION_SECRET` before users save keys.
 
+## Buy a license
+
+The source is public so you can inspect it before buying. A paid license is required to use it.
+
+- [Personal Studio License — $39](https://442666817401.gumroad.com/l/production-planner-personal-license) — one studio, internal use.
+- [Commercial License — $99](https://442666817401.gumroad.com/l/production-planner-commercial-license) — client work, self-hosting, and white-label deliverables.
+- [Setup & Customization — $149](https://442666817401.gumroad.com/l/production-planner-setup) — hands-on installation and configuration help.
+- [Full Ownership Transfer — $699](https://442666817401.gumroad.com/l/production-planner-ownership) — one buyer only, with a signed transfer agreement.
+
 ## License
 
-All rights reserved. See [LICENSE](./LICENSE). Commercial licensing or transfer of ownership may be available by separate agreement; contact `contact@raficfekih.online`.
+All rights reserved. See [LICENSE](./LICENSE). Commercial licensing or transfer of ownership is by separate written agreement; contact `contact@raficfekihstudio.com`.

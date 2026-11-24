@@ -1,4 +1,4 @@
-# Gumroad / Lemon Squeezy product sheet
+# Gumroad product sheet
 
 Paste-ready copy for selling **Production Planner** as a digital software product.
 
@@ -110,7 +110,7 @@ Introductory prices to get the first buyers. Raise them after a few sales or tes
 | Setup add-on | **$149** | Installation, env setup, admin seeding, basic customization |
 | Full Ownership Transfer | **$699** | One buyer only, signed agreement |
 
-## Suggested Gumroad / Lemon Squeezy setup
+## Suggested Gumroad setup
 
 - **Product type:** Digital product / software source code
 - **Currency:** USD
@@ -118,15 +118,18 @@ Introductory prices to get the first buyers. Raise them after a few sales or tes
 - **Checkout question:** “Studio name / intended use?”
 - **Checkout question:** “Which license are you buying: Personal, Commercial, or Ownership?”
 - **Delivery:** link to `https://github.com/rafikfekihstudio/production-planner`
-- **Support contact:** `contact@raficfekih.online`
+- **Support contact:** `contact@raficfekihstudio.com`
 
 ## Refund / support note
 
-Because this is software source code with instant access, refunds are limited. Offer help with setup instead of a refund where possible.
+Refund terms depend on the tier:
 
-Example text:
+- **Personal Studio License ($39)** — 30-day money back guarantee.
+- **Commercial License ($99)** — 30-day money back guarantee.
+- **Setup add-on ($149)** — refundable before work begins. No refunds after work begins.
+- **Full Ownership Transfer ($699)** — one buyer only. No refunds after transfer.
 
-> Digital product — no refunds after access. If you have trouble installing it, email `contact@raficfekih.online` and I’ll help you get it running.
+If you have trouble installing it, email `contact@raficfekihstudio.com` and I’ll help you get it running.
 
 ## Short sales email / DM
 
